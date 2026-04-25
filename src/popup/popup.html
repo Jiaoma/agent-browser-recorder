@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Browser Recorder</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-title">
+        <span class="logo">🦀</span>
+        <h1>AB Recorder</h1>
+      </div>
+      <div class="status" id="status">
+        <span class="status-dot" id="statusDot"></span>
+        <span class="status-text" id="statusText">Ready</span>
+      </div>
+    </header>
+
+    <!-- Controls -->
+    <div class="controls">
+      <button id="btnRecord" class="btn btn-record">
+        <span class="btn-icon">⏺</span>
+        <span class="btn-label">Record</span>
+      </button>
+      <button id="btnStop" class="btn btn-stop" disabled>
+        <span class="btn-icon">⏹</span>
+        <span class="btn-label">Stop</span>
+      </button>
+      <button id="btnClear" class="btn btn-clear" disabled>
+        <span class="btn-icon">🗑</span>
+        <span class="btn-label">Clear</span>
+      </button>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats" id="stats">
+      <div class="stat">
+        <span class="stat-value" id="actionCount">0</span>
+        <span class="stat-label">Actions</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="duration">0:00</span>
+        <span class="stat-label">Duration</span>
+      </div>
+    </div>
+
+    <!-- Action List -->
+    <div class="action-list" id="actionList">
+      <div class="empty-state" id="emptyState">
+        <span class="empty-icon">🎬</span>
+        <p>Click <strong>Record</strong> to start capturing your interactions</p>
+        <p class="hint">Shortcut: Ctrl+Shift+R</p>
+      </div>
+    </div>
+
+    <!-- Export -->
+    <div class="export-section" id="exportSection" style="display:none">
+      <div class="export-buttons">
+        <button id="btnExportShell" class="btn btn-export">
+          📄 Shell Script
+        </button>
+        <button id="btnExportBatch" class="btn btn-export">
+          📦 Batch JSON
+        </button>
+        <button id="btnCopyCommands" class="btn btn-export">
+          📋 Copy Commands
+        </button>
+      </div>
+    </div>
+
+    <!-- Command Preview -->
+    <div class="preview-section" id="previewSection" style="display:none">
+      <h3>Commands Preview</h3>
+      <pre class="preview-code" id="previewCode"></pre>
+    </div>
+  </div>
+
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

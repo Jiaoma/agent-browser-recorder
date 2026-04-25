@@ -1,0 +1,58 @@
+/* Agent Browser Recorder - Recording Indicator Styles */
+
+#ab-recorder-indicator {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: rgba(0, 0, 0, 0.85);
+  color: #fff;
+  border-radius: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: default;
+  user-select: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(10px);
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+#ab-recorder-indicator:hover {
+  transform: scale(1.05);
+}
+
+.ab-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ff3b30;
+  animation: ab-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes ab-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.ab-text {
+  letter-spacing: 0.5px;
+}
+
+.ab-count {
+  background: rgba(255, 255, 255, 0.2);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  min-width: 24px;
+  text-align: center;
+}
+
+.ab-highlight {
+  pointer-events: none;
+}

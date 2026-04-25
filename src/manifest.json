@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "Agent Browser Recorder",
+  "version": "1.0.0",
+  "description": "Record user interactions on web pages and translate them into agent-browser CLI commands.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs",
+    "nativeMessaging"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/recorder.js"],
+      "css": ["content/recorder.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+                  "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "commands": {
+    "toggle-recording": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+R",
+        "mac": "Command+Shift+R"
+      },
+      "description": "Toggle recording on/off"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["content/recorder.css"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
