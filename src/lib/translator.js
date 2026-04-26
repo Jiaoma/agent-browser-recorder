@@ -142,6 +142,9 @@ function generateJsScript(actions) {
   const steps = [];
   const firstNav = actions.find(a => a.action.type === 'navigate');
 
+  // Start clean — close any existing browser sessions
+  steps.push(`  await ab('close', '--all');`);
+
   if (firstNav) {
     steps.push(`  await ab('open', ${jsQuote(firstNav.action.url)});`);
     steps.push(`  await ab('wait', '--load', 'networkidle');`);
@@ -221,7 +224,12 @@ const { execSync } = require('child_process');
 // =====================================================================
 
 function ab(...args) {
-  const cmd = args.join(' ');
+  const cmd = args.map(a => {
+    // Shell-escape each argument to prevent & and other special chars
+    const s = String(a);
+    if (/^[a-zA-Z0-9_@:.\/\-]+$/.test(s)) return s;
+    return "'" + s.replace(/'/g, "'\\''") + "'";
+  }).join(' ');
   try {
     const out = execSync('agent-browser ' + cmd, { encoding: 'utf8', timeout: 15000 });
     process.stdout.write(out);
@@ -282,6 +290,7 @@ function generateScript(actions) {
     `# Generated: ${new Date().toISOString()}`,
     '# Strategy: snapshot → grep ref → act on @ref',
     '',
+    'agent-browser close --all 2>/dev/null',
     'ab_ref() {',
     '  agent-browser snapshot -i 2>/dev/null | grep -i "$1" | head -1 | grep -o "ref=e[0-9]*" | cut -d= -f2',
     '}',

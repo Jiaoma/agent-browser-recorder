@@ -41,6 +41,7 @@ function translateCommandPreview(action,locator){
 
 function generateJsScript(actions){
   const steps=[];const firstNav=actions.find(a=>a.action.type==='navigate');
+  steps.push(`  await ab('close', '--all');`);
   if(firstNav){steps.push(`  await ab('open', ${jsQuote(firstNav.action.url)});`);steps.push(`  await ab('wait', '--load', 'networkidle');`)}
   for(const{action,locator}of actions){
     if(action.type==='navigate')continue;
@@ -75,7 +76,11 @@ function generateJsScript(actions){
 const { execSync } = require('child_process');
 
 function ab(...args) {
-  const cmd = args.join(' ');
+  const cmd = args.map(a => {
+    const s = String(a);
+    if (/^[a-zA-Z0-9_@:.\/\-]+$/.test(s)) return s;
+    return "'" + s.replace(/'/g, "'\\''") + "'";
+  }).join(' ');
   try {
     const out = execSync('agent-browser ' + cmd, { encoding: 'utf8', timeout: 15000 });
     process.stdout.write(out);
@@ -122,7 +127,7 @@ main().catch(e => { console.error('Fatal:', e.message); process.exit(1); });
 `}
 
 function generateScript(actions){
-  const lines=['#!/bin/bash','# Agent Browser Recorder — Auto-generated script',`# Generated: ${new Date().toISOString()}`,'# Strategy: snapshot → grep ref → act on @ref','','ab_ref() {','  agent-browser snapshot -i 2>/dev/null | grep -i "$1" | head -1 | grep -o "ref=e[0-9]*" | cut -d= -f2','}',''];
+  const lines=['#!/bin/bash','# Agent Browser Recorder — Auto-generated script',`# Generated: ${new Date().toISOString()}`,'# Strategy: snapshot → grep ref → act on @ref','','agent-browser close --all 2>/dev/null','','ab_ref() {','  agent-browser snapshot -i 2>/dev/null | grep -i "$1" | head -1 | grep -o "ref=e[0-9]*" | cut -d= -f2','}',''];
   const firstNav=actions.find(a=>a.action.type==='navigate');
   if(firstNav){lines.push(`agent-browser open ${shellQuote(firstNav.action.url)}`);lines.push('agent-browser wait --load networkidle');lines.push('')}
   for(const{action,locator}of actions){
@@ -157,6 +162,7 @@ function generateBatchCommands(actions){
 const btnRecord=document.getElementById('btnRecord'),btnStop=document.getElementById('btnStop'),btnClear=document.getElementById('btnClear');
 const btnExportJS=document.getElementById('btnExportJS'),btnExportShell=document.getElementById('btnExportShell');
 const btnExportBatch=document.getElementById('btnExportBatch'),btnCopyCommands=document.getElementById('btnCopyCommands');
+const btnReplay=document.getElementById('btnReplay');
 const actionList=document.getElementById('actionList'),actionCountEl=document.getElementById('actionCount');
 const durationEl=document.getElementById('duration'),statusDot=document.getElementById('statusDot');
 const statusText=document.getElementById('statusText'),previewCode=document.getElementById('previewCode');
@@ -169,6 +175,7 @@ btnExportJS.addEventListener('click',()=>downloadExport('js'));
 btnExportShell.addEventListener('click',()=>downloadExport('shell'));
 btnExportBatch.addEventListener('click',()=>downloadExport('batch'));
 btnCopyCommands.addEventListener('click',copyCommands);
+btnReplay.addEventListener('click',replayScript);
 
 chrome.runtime.onMessage.addListener(msg=>{
   if(msg.type==='ACTION_RECORDED'){actions.push(msg.action);addActionToList(msg.action);actionCountEl.textContent=actions.length;updatePreview();updateExportButtons()}
@@ -196,7 +203,7 @@ function setRecordingUI(rec){btnRecord.disabled=rec;btnStop.disabled=!rec;btnCle
 }
 function startDurationTimer(){stopDurationTimer();durationInterval=setInterval(()=>{const s=Math.floor((Date.now()-startTime)/1000);durationEl.textContent=`${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`},1000)}
 function stopDurationTimer(){if(durationInterval)clearInterval(durationInterval);durationInterval=null}
-function updateExportButtons(){const h=actions.length>0;btnExportJS.disabled=!h;btnExportShell.disabled=!h;btnExportBatch.disabled=!h;btnCopyCommands.disabled=!h}
+function updateExportButtons(){const h=actions.length>0;btnExportJS.disabled=!h;btnExportShell.disabled=!h;btnExportBatch.disabled=!h;btnCopyCommands.disabled=!h;btnReplay.disabled=!h}
 
 function renderActionList(){actionList.innerHTML='';
   if(actions.length===0){actionList.innerHTML='<div class="empty-state"><span class="empty-icon">🎬</span><p>Click <strong>Record</strong> to start capturing</p><p class="hint">Shortcut: Cmd+Shift+R</p></div>';return}
@@ -237,3 +244,28 @@ async function copyCommands(){
 }
 
 function escapeHtml(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+
+async function replayScript(){
+  if(actions.length===0)return;
+  const wrapped=actions.map(a=>({action:a,locator:a.locator||{}}));
+  const script=generateJsScript(wrapped);
+  const filename='recording-replay.js';
+  const url=URL.createObjectURL(new Blob([script],{type:'text/plain'}));
+  chrome.downloads.download({url,filename,saveAs:false},async(id)=>{
+    if(chrome.runtime.lastError){
+      // Fallback: just copy the script
+      try{await navigator.clipboard.writeText(script);btnReplay.textContent='📋 Copied!';setTimeout(()=>{btnReplay.textContent='▶️ Replay'},2000)}catch(e){}
+      return;
+    }
+    // Copy the run command to clipboard
+    const cmd='node ~/Downloads/recording-replay.js';
+    try{
+      await navigator.clipboard.writeText(cmd);
+      btnReplay.textContent='✅ Saved & Copied cmd!';
+      setTimeout(()=>{btnReplay.textContent='▶️ Replay'},3000);
+    }catch(e){
+      btnReplay.textContent='✅ Saved!';
+      setTimeout(()=>{btnReplay.textContent='▶️ Replay'},2000);
+    }
+  });
+}

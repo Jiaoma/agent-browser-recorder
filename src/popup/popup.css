@@ -313,6 +313,20 @@ h1 {
   background: #0066d6;
 }
 
+.btn-replay {
+  background: #34c759;
+  color: white;
+  border-color: #34c759;
+}
+.btn-replay:hover:not(:disabled) {
+  background: #2da44e;
+}
+.btn-replay:disabled {
+  background: #e8e8ed;
+  color: #999;
+  border-color: #d1d1d6;
+}
+
 /* Preview */
 .preview-section {
   margin-bottom: 12px;
