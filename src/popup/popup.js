@@ -226,13 +226,13 @@ function updatePreview(){
 
 function downloadExport(format){
   if(actions.length===0)return;const wrapped=actions.map(a=>({action:a,locator:a.locator||{}}));
-  let content,filename;
-  if(format==='js'){content=generateJsScript(wrapped);filename='recording.js'}
-  else if(format==='shell'){content=generateScript(wrapped);filename='recording.sh'}
-  else{content=generateBatchCommands(wrapped);filename='recording-batch.json'}
-  const url=URL.createObjectURL(new Blob([content],{type:'text/plain'}));
-  chrome.downloads.download({url,filename,saveAs:false},id=>{
-    if(chrome.runtime.lastError){window.open(url,'_blank')}
+  let content,filename,mime;
+  if(format==='js'){content=generateJsScript(wrapped);filename='recording.js';mime='application/javascript'}
+  else if(format==='shell'){content=generateScript(wrapped);filename='recording.sh';mime='application/x-sh'}
+  else{content=generateBatchCommands(wrapped);filename='recording-batch.json';mime='application/json'}
+  const dataUrl='data:'+mime+';charset=utf-8,'+encodeURIComponent(content);
+  chrome.downloads.download({url:dataUrl,filename,saveAs:false},id=>{
+    if(chrome.runtime.lastError){window.open(dataUrl,'_blank')}
     else{const btn=format==='js'?btnExportJS:format==='shell'?btnExportShell:btnExportBatch;const orig=btn.textContent;btn.textContent='✅ Saved!';setTimeout(()=>{btn.textContent=orig},2000)}
   })
 }
@@ -250,8 +250,9 @@ async function replayScript(){
   const wrapped=actions.map(a=>({action:a,locator:a.locator||{}}));
   const script=generateJsScript(wrapped);
   const filename='recording-replay.js';
-  const url=URL.createObjectURL(new Blob([script],{type:'text/plain'}));
-  chrome.downloads.download({url,filename,saveAs:false},async(id)=>{
+  // Use data: URL with application/javascript MIME to preserve .js extension
+  const dataUrl='data:application/javascript;charset=utf-8,'+encodeURIComponent(script);
+  chrome.downloads.download({url:dataUrl,filename,saveAs:false},async(id)=>{
     if(chrome.runtime.lastError){
       // Fallback: just copy the script
       try{await navigator.clipboard.writeText(script);btnReplay.textContent='📋 Copied!';setTimeout(()=>{btnReplay.textContent='▶️ Replay'},2000)}catch(e){}
