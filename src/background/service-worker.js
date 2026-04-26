@@ -1,25 +1,18 @@
 /**
- * Background Service Worker — Manages recording state, stores actions, coordinates between
- * content scripts and popup.
+ * Background Service Worker — Manages recording state.
  *
- * Uses chrome.storage.session for reliable state persistence across popup open/close.
+ * Uses in-memory state (reliable) + chrome.storage.local for persistence across
+ * service worker restarts. Avoids chrome.storage.session (not available in all Chrome versions).
  */
 
-// ============ State (backed by chrome.storage.session) ============
+// ============ In-Memory State ============
 
-async function getState() {
-  const result = await chrome.storage.session.get('recorderState');
-  return result.recorderState || {
-    isRecording: false,
-    actions: [],
-    tabId: null,
-    startTime: null
-  };
-}
-
-async function setState(state) {
-  await chrome.storage.session.set({ recorderState: state });
-}
+let state = {
+  isRecording: false,
+  actions: [],
+  tabId: null,
+  startTime: null
+};
 
 // ============ Message Handling ============
 
@@ -34,38 +27,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
     }
     case 'GET_STATE': {
-      getState().then(state => sendResponse({
+      sendResponse({
         isRecording: state.isRecording,
         actionCount: state.actions.length,
         startTime: state.startTime,
         tabId: state.tabId
-      }));
+      });
       return true;
     }
     case 'GET_ACTIONS': {
-      getState().then(state => sendResponse({ actions: state.actions }));
+      sendResponse({ actions: state.actions });
       return true;
     }
     case 'CLEAR_ACTIONS': {
-      getState().then(async (state) => {
-        state.actions = [];
-        await setState(state);
-        sendResponse({ success: true });
-      });
+      state.actions = [];
+      sendResponse({ success: true });
       return true;
     }
     case 'ACTION_RECORDED': {
       // From content script — store the action
-      getState().then(async (state) => {
-        state.actions.push(msg.action);
-        await setState(state);
-        // Forward to popup if open
-        chrome.runtime.sendMessage(msg).catch(() => {});
-      });
+      state.actions.push(msg.action);
+      // Forward to popup if open
+      chrome.runtime.sendMessage(msg).catch(() => {});
+      sendResponse({ success: true });
       return true;
     }
   }
-  return true; // Keep channel open for async
+  return false;
 });
 
 // ============ Recording Control ============
@@ -77,13 +65,12 @@ async function startRecording() {
     return;
   }
 
-  const state = {
+  state = {
     isRecording: true,
     actions: [],
     tabId: tab.id,
     startTime: Date.now()
   };
-  await setState(state);
 
   // Tell content script to start recording
   try {
@@ -100,11 +87,9 @@ async function startRecording() {
 }
 
 async function stopRecording() {
-  const state = await getState();
   if (!state.isRecording) return state.actions;
 
   state.isRecording = false;
-  await setState(state);
 
   // Tell content script to stop
   try {
@@ -122,26 +107,21 @@ async function stopRecording() {
 
 // Handle tab close — stop recording if the tab is closed
 chrome.tabs.onRemoved.addListener((tabId) => {
-  getState().then(async (state) => {
-    if (state.tabId === tabId) {
-      state.isRecording = false;
-      state.tabId = null;
-      await setState(state);
-      chrome.action.setBadgeText({ text: '' });
-    }
-  });
+  if (state.tabId === tabId) {
+    state.isRecording = false;
+    state.tabId = null;
+    chrome.action.setBadgeText({ text: '' });
+  }
 });
 
 // Handle keyboard shortcut
 chrome.commands.onCommand.addListener((command) => {
   if (command === 'toggle-recording') {
-    getState().then(state => {
-      if (state.isRecording) {
-        stopRecording();
-      } else {
-        startRecording();
-      }
-    });
+    if (state.isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
   }
 });
 

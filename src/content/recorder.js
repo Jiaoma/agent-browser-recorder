@@ -440,3 +440,13 @@ function isRecorderElement(el) {
 }
 
 console.log('[AB Recorder] Content script loaded v1.2.0');
+
+// Visual diagnostic: add a small badge to confirm injection
+(function() {
+  const badge = document.createElement('div');
+  badge.id = 'ab-loaded-badge';
+  badge.textContent = '🦀 AB Ready';
+  badge.style.cssText = 'position:fixed;bottom:8px;left:8px;z-index:2147483647;padding:4px 10px;background:rgba(0,0,0,0.7);color:#fff;font:11px system-ui;border-radius:12px;pointer-events:none;opacity:1;transition:opacity 2s ease 3s;';
+  document.body.appendChild(badge);
+  setTimeout(() => { badge.style.opacity = '0'; setTimeout(() => badge.remove(), 3000); }, 100);
+})();
