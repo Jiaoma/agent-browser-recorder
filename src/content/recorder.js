@@ -219,6 +219,8 @@ function recordAction(action) {
 
 function handleClick(e) {
   if (!isRecording || isRecorderElement(e.target)) return;
+  // Ignore clicks that were actually drag operations on the indicator
+  if (abDrag.moved) { abDrag.moved = false; return; }
   flushTyping();
   const el = e.target;
   recordAction({
@@ -367,18 +369,57 @@ function detachListeners() {
 
 // ============ Visual Feedback ============
 
+// Drag state for the recording indicator
+let abDrag = { active: false, startX: 0, startY: 0, startLeft: 0, startTop: 0, moved: false };
+
 function showRecordingIndicator() {
   if (document.getElementById('ab-recorder-indicator')) return;
   const el = document.createElement('div');
   el.id = 'ab-recorder-indicator';
   el.innerHTML = '<span class="ab-dot"></span><span class="ab-text">REC</span><span class="ab-count" id="ab-action-count">0</span>';
   document.body.appendChild(el);
+
+  // Make it draggable
+  el.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = el.getBoundingClientRect();
+    abDrag = {
+      active: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      startLeft: rect.left,
+      startTop: rect.top,
+      moved: false
+    };
+    el.classList.add('ab-dragging');
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!abDrag.active) return;
+    e.preventDefault();
+    const dx = e.clientX - abDrag.startX;
+    const dy = e.clientY - abDrag.startY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) abDrag.moved = true;
+    const newLeft = Math.max(0, Math.min(window.innerWidth - el.offsetWidth, abDrag.startLeft + dx));
+    const newTop = Math.max(0, Math.min(window.innerHeight - el.offsetHeight, abDrag.startTop + dy));
+    el.style.left = newLeft + 'px';
+    el.style.top = newTop + 'px';
+    el.style.right = 'auto'; // clear default right:16px
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!abDrag.active) return;
+    abDrag.active = false;
+    el.classList.remove('ab-dragging');
+  });
 }
 
 function hideRecordingIndicator() {
   const el = document.getElementById('ab-recorder-indicator');
   if (el) el.remove();
   document.querySelectorAll('.ab-highlight').forEach(e => e.remove());
+  abDrag.active = false;
 }
 
 function highlightElement(el) {
