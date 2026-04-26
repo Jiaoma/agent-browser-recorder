@@ -72,20 +72,60 @@ function translateCommandPreview(action, locator) {
 // ============ extract_table JS generator ============
 
 function extractTableEvalCode(action) {
-  const tableIdx = action.tableIndex || 0;
+  const locator = action.tableLocator || { type: 'native', tableIndex: action.tableIndex || 0 };
   const rowIdx = action.rowIndex !== undefined ? action.rowIndex : -1;
   const hasHeaders = action.headers && action.headers.length > 0;
 
+  // Build the JS to find the table element
+  let findTable;
+  if (locator.type === 'aria') {
+    findTable = `document.querySelectorAll('[role="table"],[role="grid"]')[${locator.tableIndex || 0}]`;
+  } else if (locator.type === 'grid') {
+    // Use the recorded CSS selector
+    findTable = `document.querySelector(${JSON.stringify(locator.selector)})`;
+  } else {
+    // native
+    findTable = `document.querySelectorAll('table')[${locator.tableIndex || 0}]`;
+  }
+
   if (rowIdx >= 0) {
     // Extract specific row
-    if (hasHeaders) {
-      return `(function(){const ts=document.querySelectorAll('table');if(!ts[${tableIdx}]){throw new Error('table ${tableIdx} not found')}const t=ts[${tableIdx}];const r=t.querySelectorAll('tr')[${rowIdx}];if(!r){throw new Error('row ${rowIdx} not found')}const cells=Array.from(r.querySelectorAll('td,th')).map(c=>c.innerText.trim());const headers=${JSON.stringify(action.headers)};const obj={};headers.forEach((h,i)=>{obj[h]=cells[i]||''});return obj})()`;
+    let findRow;
+    if (locator.type === 'aria') {
+      findRow = `t.querySelectorAll('[role="row"]')[${rowIdx}]`;
+    } else if (locator.type === 'grid') {
+      findRow = `t.children[${rowIdx}]`;
+    } else {
+      findRow = `t.querySelectorAll('tr')[${rowIdx}]`;
     }
-    return `(function(){const t=document.querySelectorAll('table')[${tableIdx}];const r=t.querySelectorAll('tr')[${rowIdx}];return Array.from(r.querySelectorAll('td,th')).map(c=>c.innerText.trim())})()`;
+    let findCells;
+    if (locator.type === 'aria') {
+      findCells = `r.querySelectorAll('[role="cell"],[role="gridcell"],[role="columnheader"]')`;
+    } else if (locator.type === 'grid') {
+      findCells = `r.children`;
+    } else {
+      findCells = `r.querySelectorAll('td,th')`;
+    }
+
+    if (hasHeaders) {
+      return `(function(){const t=${findTable};if(!t){throw new Error('table not found')}const r=${findRow};if(!r){throw new Error('row ${rowIdx} not found')}const cells=Array.from(${findCells}).map(c=>c.innerText.trim());const headers=${JSON.stringify(action.headers)};const obj={};headers.forEach((h,i)=>{obj[h]=cells[i]||''});return obj})()`;
+    }
+    return `(function(){const t=${findTable};if(!t){throw new Error('table not found')}const r=${findRow};if(!r){throw new Error('row ${rowIdx} not found')}return Array.from(${findCells}).map(c=>c.innerText.trim())})()`;
   }
 
   // Extract entire table
-  return `(function(){const t=document.querySelectorAll('table')[${tableIdx}];return Array.from(t.querySelectorAll('tr')).map(r=>Array.from(r.querySelectorAll('td,th')).map(c=>c.innerText.trim()))})()`;
+  let findRows, findCellsAll;
+  if (locator.type === 'aria') {
+    findRows = `t.querySelectorAll('[role="row"]')`;
+    findCellsAll = `r.querySelectorAll('[role="cell"],[role="gridcell"],[role="columnheader"]')`;
+  } else if (locator.type === 'grid') {
+    findRows = `t.children`;
+    findCellsAll = `r.children`;
+  } else {
+    findRows = `t.querySelectorAll('tr')`;
+    findCellsAll = `r.querySelectorAll('td,th')`;
+  }
+  return `(function(){const t=${findTable};if(!t){throw new Error('table not found')}return Array.from(${findRows}).map(r=>Array.from(${findCellsAll}).map(c=>c.innerText.trim()))})()`;
 }
 
 function extractAllTablesEvalCode() {

@@ -217,6 +217,8 @@ function recordAction(action) {
   if (action.rowIndex !== undefined) entry.rowIndex = action.rowIndex;
   if (action.headers !== undefined) entry.headers = action.headers;
   if (action.rowData !== undefined) entry.rowData = action.rowData;
+  if (action.tableLocator !== undefined) entry.tableLocator = action.tableLocator;
+  if (action.rowLocator !== undefined) entry.rowLocator = action.rowLocator;
 
   console.log('[AB Recorder] Action:', entry.type, entry.description || '');
 
@@ -244,29 +246,23 @@ function handleClick(e) {
   flushTyping();
   const el = e.target;
 
-  // Check if click is inside a table → record extract_table instead of plain click
-  const table = el.closest('table');
-  if (table) {
-    const row = el.closest('tr');
-    if (row) {
-      // Extract table info for the script generator
-      const tableSelector = buildSelector(table);
-      const rowIndex = Array.from(table.querySelectorAll('tr')).indexOf(row);
-      const headers = extractTableHeaders(table);
-      const rowData = extractRowData(row);
-      recordAction({
-        type: 'extract_table',
-        elementInfo: el,
-        cssSelector: tableSelector,
-        tableIndex: getTableIndex(table),
-        rowIndex,
-        headers,
-        rowData,
-        description: `Extract table row ${rowIndex + 1}: ${rowData.join(' | ')}`
-      });
-      highlightElement(table);
-      return;
-    }
+  // Check if click is inside a table (native or virtual) → record extract_table
+  const tableInfo = findTableContext(el);
+  if (tableInfo) {
+    recordAction({
+      type: 'extract_table',
+      elementInfo: el,
+      cssSelector: tableInfo.tableSelector,
+      tableIndex: tableInfo.tableIndex,
+      rowIndex: tableInfo.rowIndex,
+      headers: tableInfo.headers,
+      rowData: tableInfo.rowData,
+      tableLocator: tableInfo.tableLocator,
+      rowLocator: tableInfo.rowLocator,
+      description: `Extract table row ${tableInfo.rowIndex + 1}: ${tableInfo.rowData.join(' | ')}`
+    });
+    highlightElement(tableInfo.tableEl);
+    return;
   }
 
   recordAction({
@@ -278,13 +274,121 @@ function handleClick(e) {
   highlightElement(el);
 }
 
-// Find which table on the page this is (0-indexed)
-function getTableIndex(table) {
-  const tables = document.querySelectorAll('table');
-  return Array.from(tables).indexOf(table);
+// ============ Table Detection (native + virtual/SPA) ============
+
+function findTableContext(el) {
+  // Strategy 1: Native <table>
+  const nativeTable = el.closest('table');
+  if (nativeTable) {
+    const row = el.closest('tr');
+    if (row) {
+      const allTables = document.querySelectorAll('table');
+      const tableIndex = Array.from(allTables).indexOf(nativeTable);
+      const rowIndex = Array.from(nativeTable.querySelectorAll('tr')).indexOf(row);
+      const headers = extractTableHeaders(nativeTable);
+      const rowData = extractRowData(row);
+      return {
+        tableEl: nativeTable,
+        tableSelector: buildSelector(nativeTable),
+        tableIndex,
+        rowIndex,
+        headers,
+        rowData,
+        tableLocator: { type: 'native', tableIndex },
+        rowLocator: { type: 'native', rowIndex }
+      };
+    }
+  }
+
+  // Strategy 2: ARIA role="table" or role="grid"
+  const ariaTable = el.closest('[role="table"], [role="grid"], [role="treegrid"]');
+  if (ariaTable) {
+    const row = el.closest('[role="row"], [role="rowheader"]');
+    if (row) {
+      return buildAriaTableInfo(el, ariaTable, row);
+    }
+  }
+
+  // Strategy 3: Detect grid-like structures (Semi Design, Ant Design, etc.)
+  const gridTable = findGridTable(el);
+  if (gridTable) return gridTable;
+
+  return null;
 }
 
-// Extract header labels from a table
+function buildAriaTableInfo(el, tableEl, rowEl) {
+  const allTables = document.querySelectorAll('[role="table"], [role="grid"], [role="treegrid"]');
+  const tableIndex = Array.from(allTables).indexOf(tableEl);
+  const allRows = tableEl.querySelectorAll('[role="row"]');
+  const rowIndex = Array.from(allRows).indexOf(rowEl);
+  const headerRow = tableEl.querySelector('[role="row"]');
+  const headerCells = headerRow ? headerRow.querySelectorAll('[role="columnheader"]') : [];
+  const headers = Array.from(headerCells).map(c => c.innerText.trim()).filter(Boolean);
+  const cells = rowEl.querySelectorAll('[role="cell"], [role="gridcell"], [role="columnheader"]');
+  const rowData = Array.from(cells).map(c => c.innerText.trim());
+  return {
+    tableEl,
+    tableSelector: buildSelector(tableEl),
+    tableIndex,
+    rowIndex,
+    headers,
+    rowData,
+    tableLocator: { type: 'aria', tableIndex },
+    rowLocator: { type: 'aria', rowIndex }
+  };
+}
+
+function findGridTable(el) {
+  // Walk up the DOM to find a container with repeated row-like children
+  let current = el.parentElement;
+  for (let depth = 0; depth < 8 && current; depth++) {
+    const children = Array.from(current.children);
+    if (children.length >= 2) {
+      const childSigs = children.map(c => getStructSig(c));
+      const firstSig = childSigs[0];
+      // At least 2 children share the same structure → looks like rows
+      if (firstSig && childSigs.filter(s => s === firstSig).length >= 2) {
+        let targetRow = null;
+        for (const child of children) {
+          if (child.contains(el)) { targetRow = child; break; }
+        }
+        if (!targetRow) { current = current.parentElement; continue; }
+        const rowIndex = children.indexOf(targetRow);
+        // Headers from first row
+        const firstRow = children[0];
+        const headers = Array.from(firstRow.children).map(c => c.innerText.trim()).filter(Boolean);
+        const rowData = Array.from(targetRow.children).map(c => c.innerText.trim());
+        // Count similar containers for tableIndex
+        const tableIndex = countSimilarContainers(current);
+        return {
+          tableEl: current,
+          tableSelector: buildSelector(current),
+          tableIndex,
+          rowIndex,
+          headers: headers.length > 0 ? headers : [],
+          rowData,
+          tableLocator: { type: 'grid', tableIndex, selector: buildSelector(current) },
+          rowLocator: { type: 'grid', rowIndex }
+        };
+      }
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
+
+function getStructSig(el) {
+  const ch = el.children;
+  if (ch.length === 0) return el.tagName;
+  return el.tagName + '(' + Array.from(ch).map(c => c.tagName + ':' + c.children.length).join(',') + ')';
+}
+
+function countSimilarContainers(el) {
+  // Simple: just return 0 for now (first grid-like table found)
+  return 0;
+}
+
+// Extract header labels from a native table
 function extractTableHeaders(table) {
   const headerRow = table.querySelector('thead tr') || table.querySelector('tr');
   if (!headerRow) return [];

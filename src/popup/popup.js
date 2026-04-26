@@ -16,7 +16,19 @@ function cmdForSimpleAction(a){switch(a.type){case'navigate':return['open',a.url
 function isSimpleAction(t){return['press','back','forward','reload','scroll'].includes(t)}
 function getSearchTerm(a,l){if(l&&l.value)return l.value;if(a.description){const m=a.description.match(/"([^"]+)"/);if(m)return m[1]}return''}
 
-function extractTableEvalCode(a){const ti=a.tableIndex||0,ri=a.rowIndex!=null?a.rowIndex:-1,h=a.headers&&a.headers.length>0;if(ri>=0){if(h)return`(function(){const ts=document.querySelectorAll('table');if(!ts[${ti}]){throw new Error('table ${ti} not found')}const t=ts[${ti}];const r=t.querySelectorAll('tr')[${ri}];if(!r){throw new Error('row ${ri} not found')}const cells=Array.from(r.querySelectorAll('td,th')).map(c=>c.innerText.trim());const headers=${JSON.stringify(a.headers)};const obj={};headers.forEach((h,i)=>{obj[h]=cells[i]||''});return obj})()`;return`(function(){const t=document.querySelectorAll('table')[${ti}];const r=t.querySelectorAll('tr')[${ri}];return Array.from(r.querySelectorAll('td,th')).map(c=>c.innerText.trim())})()`}return`(function(){const t=document.querySelectorAll('table')[${ti}];return Array.from(t.querySelectorAll('tr')).map(r=>Array.from(r.querySelectorAll('td,th')).map(c=>c.innerText.trim()))})()`}
+function extractTableEvalCode(a){
+  const loc=a.tableLocator||{type:'native',tableIndex:a.tableIndex||0};
+  const ri=a.rowIndex!=null?a.rowIndex:-1,h=a.headers&&a.headers.length>0;
+  let ft;if(loc.type==='aria')ft=`document.querySelectorAll('[role="table"],[role="grid"]')[${loc.tableIndex||0}]`;else if(loc.type==='grid')ft=`document.querySelector(${JSON.stringify(loc.selector)})`;else ft=`document.querySelectorAll('table')[${loc.tableIndex||0}]`;
+  if(ri>=0){
+    let fr;if(loc.type==='aria')fr=`t.querySelectorAll('[role="row"]')[${ri}]`;else if(loc.type==='grid')fr=`t.children[${ri}]`;else fr=`t.querySelectorAll('tr')[${ri}]`;
+    let fc;if(loc.type==='aria')fc=`r.querySelectorAll('[role="cell"],[role="gridcell"],[role="columnheader"]')`;else if(loc.type==='grid')fc=`r.children`;else fc=`r.querySelectorAll('td,th')`;
+    if(h)return`(function(){const t=${ft};if(!t){throw new Error('table not found')}const r=${fr};if(!r){throw new Error('row ${ri} not found')}const cells=Array.from(${fc}).map(c=>c.innerText.trim());const headers=${JSON.stringify(a.headers)};const obj={};headers.forEach((h,i)=>{obj[h]=cells[i]||''});return obj})()`;
+    return`(function(){const t=${ft};if(!t){throw new Error('table not found')}const r=${fr};if(!r){throw new Error('row ${ri} not found')}return Array.from(${fc}).map(c=>c.innerText.trim())})()`
+  }
+  let frs,fcs;if(loc.type==='aria'){frs=`t.querySelectorAll('[role="row"]')`;fcs=`r.querySelectorAll('[role="cell"],[role="gridcell"],[role="columnheader"]')`}else if(loc.type==='grid'){frs=`t.children`;fcs=`r.children`}else{frs=`t.querySelectorAll('tr')`;fcs=`r.querySelectorAll('td,th')`}
+  return`(function(){const t=${ft};if(!t){throw new Error('table not found')}return Array.from(${frs}).map(r=>Array.from(${fcs}).map(c=>c.innerText.trim()))})()`
+}
 
 function translateCommandPreview(action,locator){
   if(action.type==='navigate')return`open ${action.url}`;
