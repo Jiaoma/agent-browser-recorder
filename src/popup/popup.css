@@ -298,9 +298,19 @@ h1 {
   transition: all 0.15s ease;
 }
 
-.btn-export:hover {
+.btn-export:hover:not(:disabled) {
   background: #e8e8ed;
   border-color: #d1d1d6;
+}
+
+.btn-export-primary {
+  background: #007aff;
+  color: white;
+  border-color: #007aff;
+}
+
+.btn-export-primary:hover:not(:disabled) {
+  background: #0066d6;
 }
 
 /* Preview */

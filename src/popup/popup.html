@@ -57,26 +57,31 @@
       </div>
     </div>
 
-    <!-- Export — always visible, disabled when no actions -->
+    <!-- Export — always visible -->
     <div class="export-section">
       <h3 class="export-title">Export</h3>
       <div class="export-buttons">
+        <button id="btnExportJS" class="btn btn-export btn-export-primary" disabled>
+          ⚡ Export .js
+        </button>
         <button id="btnExportShell" class="btn btn-export" disabled>
           📄 Export .sh
         </button>
-        <button id="btnExportJSON" class="btn btn-export" disabled>
-          📦 Export .json
+        <button id="btnExportBatch" class="btn btn-export" disabled>
+          📦 Batch JSON
         </button>
-        <button id="btnCopyCommands" class="btn btn-export" disabled>
-          📋 Copy
+      </div>
+      <div class="export-buttons" style="margin-top:6px">
+        <button id="btnCopyCommands" class="btn btn-export" disabled style="flex:1">
+          📋 Copy .js Script
         </button>
       </div>
     </div>
 
     <!-- Command Preview -->
     <div class="preview-section" id="previewSection">
-      <h3>Commands Preview</h3>
-      <pre class="preview-code" id="previewCode">// Start recording to see commands here</pre>
+      <h3>Script Preview</h3>
+      <pre class="preview-code" id="previewCode">// Start recording to see script here</pre>
     </div>
   </div>
 
