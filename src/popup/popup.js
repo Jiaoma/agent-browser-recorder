@@ -1,12 +1,11 @@
 /**
  * Popup Script — UI controller for the extension popup.
- * Self-contained (no ES module imports for Chrome Manifest V3 compatibility).
  *
- * Export buttons are ALWAYS visible. Disabled when no actions, enabled when actions exist.
- * Uses chrome.downloads.download() to save directly to the browser's default download folder.
+ * Generates agent-browser commands using find text/label/placeholder/testid.
+ * Avoids find role (unreliable in current agent-browser).
  */
 
-// ============ Translator Utilities ============
+// ============ Translator (inlined, matches src/lib/translator.js) ============
 
 function shellQuote(str) {
   if (!str) return "''";
@@ -14,58 +13,59 @@ function shellQuote(str) {
   return `'${str.replace(/'/g, "'\\''")}'`;
 }
 
-function formatSelector(locator) {
-  if (!locator) return '@unknown';
-  switch (locator.type) {
-    case 'testid': return `find testid ${shellQuote(locator.value)} click`;
-    case 'role':
-      if (locator.role) return `find role ${locator.role} click${locator.value ? ` --name ${shellQuote(locator.value)}` : ''}`;
-      return `find text ${shellQuote(locator.value)} click`;
-    case 'label': return `find label ${shellQuote(locator.value)}`;
-    case 'placeholder': return `find placeholder ${shellQuote(locator.value)}`;
-    case 'text': return `find text ${shellQuote(locator.value)} click`;
-    case 'css': default: return shellQuote(locator.value);
-  }
-}
-
 function translateCommand(action, locator) {
-  const sel = formatSelector(locator);
   switch (action.type) {
-    case 'click': return `agent-browser click ${sel}`;
-    case 'dblclick': return `agent-browser dblclick ${sel}`;
-    case 'type': return `agent-browser fill ${sel} ${shellQuote(action.value)}`;
-    case 'select': return `agent-browser select ${sel} ${shellQuote(action.value)}`;
-    case 'check': return `agent-browser check ${sel}`;
-    case 'uncheck': return `agent-browser uncheck ${sel}`;
-    case 'hover': return `agent-browser hover ${sel}`;
-    case 'focus': return `agent-browser focus ${sel}`;
-    case 'scroll': return `agent-browser scroll ${action.direction} ${action.amount || ''}`.trim();
-    case 'scroll_into_view': return `agent-browser scrollintoview ${sel}`;
-    case 'press': return `agent-browser press ${action.key}`;
     case 'navigate': return `agent-browser open ${shellQuote(action.url)}`;
+    case 'press': return `agent-browser press ${action.key}`;
     case 'back': return 'agent-browser back';
     case 'forward': return 'agent-browser forward';
     case 'reload': return 'agent-browser reload';
-    case 'tab_new': return `agent-browser tab new ${action.url ? shellQuote(action.url) : ''}`.trim();
-    case 'tab_close': return 'agent-browser tab close';
-    case 'tab_switch': return `agent-browser tab ${action.tabId || ''}`;
-    default: return `# Unknown action: ${action.type}`;
+    case 'scroll': return `agent-browser scroll ${action.direction} ${action.amount || ''}`.trim();
+    case 'tab_new': return `agent-browser open ${action.url ? shellQuote(action.url) : ''} --new-tab`.trim();
+    case 'tab_close': return 'agent-browser close';
+  }
+  const actionMap = { click: 'click', dblclick: 'dblclick', type: 'fill', select: 'fill', check: 'check', uncheck: 'uncheck', hover: 'hover', focus: 'focus' };
+  const abAction = actionMap[action.type] || 'click';
+  const isFill = action.type === 'type' || action.type === 'select';
+  if (!locator || !locator.strategy) {
+    if (isFill) return `agent-browser fill ${shellQuote(action.cssSelector || 'body')} ${shellQuote(action.value)}`;
+    return `agent-browser ${abAction} ${shellQuote(action.cssSelector || 'body')}`;
+  }
+  switch (locator.strategy) {
+    case 'testid':
+      if (isFill) return `agent-browser find testid ${shellQuote(locator.value)} fill ${shellQuote(action.value)}`;
+      return `agent-browser find testid ${shellQuote(locator.value)} ${abAction}`;
+    case 'label':
+      if (isFill) return `agent-browser find label ${shellQuote(locator.value)} fill ${shellQuote(action.value)}`;
+      return `agent-browser find label ${shellQuote(locator.value)} ${abAction}`;
+    case 'placeholder':
+      if (isFill) return `agent-browser find placeholder ${shellQuote(locator.value)} fill ${shellQuote(action.value)}`;
+      return `agent-browser find placeholder ${shellQuote(locator.value)} ${abAction}`;
+    case 'text':
+      if (isFill) return `agent-browser find text ${shellQuote(locator.value)} fill ${shellQuote(action.value)}`;
+      return `agent-browser find text ${shellQuote(locator.value)} ${abAction}`;
+    case 'css':
+    default:
+      if (isFill) return `agent-browser fill ${shellQuote(locator.value)} ${shellQuote(action.value)}`;
+      return `agent-browser ${abAction} ${shellQuote(locator.value)}`;
   }
 }
 
 function generateScript(actions) {
-  const lines = ['#!/bin/bash', '# Agent Browser Recorder - Auto-generated script',
-    `# Generated: ${new Date().toISOString()}`, ''];
+  const lines = ['#!/bin/bash', '# Agent Browser Recorder - Auto-generated script', `# Generated: ${new Date().toISOString()}`, ''];
   const firstNav = actions.find(a => a.action.type === 'navigate');
   if (firstNav) {
     lines.push(`agent-browser open ${shellQuote(firstNav.action.url)}`);
-    lines.push('agent-browser wait --load networkidle', '');
+    lines.push('agent-browser wait --load networkidle');
+    lines.push('agent-browser snapshot -i');
+    lines.push('');
   }
   for (const { action, locator } of actions) {
     if (action === firstNav?.action && action.type === 'navigate') continue;
+    if (action.type === 'navigate' && action !== firstNav?.action) continue;
     if (action.description) lines.push(`# ${action.description}`);
     lines.push(translateCommand(action, locator));
-    if (action.type === 'navigate' || action.type === 'click') lines.push('agent-browser wait 500');
+    if (action.type === 'click') lines.push('agent-browser wait --load networkidle');
   }
   lines.push('', '# End of recorded script');
   return lines.join('\n');
@@ -77,6 +77,7 @@ function generateBatchCommands(actions) {
   if (firstNav) { commands.push(['open', firstNav.action.url]); commands.push(['wait', '--load', 'networkidle']); }
   for (const { action, locator } of actions) {
     if (action === firstNav?.action && action.type === 'navigate') continue;
+    if (action.type === 'navigate' && action !== firstNav?.action) continue;
     const cmd = translateCommand(action, locator).replace(/^agent-browser\s+/, '');
     commands.push(parseCmd(cmd));
   }
@@ -96,7 +97,7 @@ function parseCmd(str) {
   return tokens;
 }
 
-// ============ DOM References ============
+// ============ Popup Logic ============
 
 const btnRecord = document.getElementById('btnRecord');
 const btnStop = document.getElementById('btnStop');
@@ -116,18 +117,13 @@ let isRecording = false;
 let startTime = null;
 let durationInterval = null;
 
-// ============ Init ============
-
-btnRecord.addEventListener('click', () => {
-  if (isRecording) stopRecording(); else startRecording();
-});
+btnRecord.addEventListener('click', () => { if (isRecording) stopRecording(); else startRecording(); });
 btnStop.addEventListener('click', stopRecording);
 btnClear.addEventListener('click', clearRecording);
 btnExportShell.addEventListener('click', () => downloadExport('shell'));
 btnExportJSON.addEventListener('click', () => downloadExport('json'));
 btnCopyCommands.addEventListener('click', copyCommands);
 
-// Listen for real-time action updates from background
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'ACTION_RECORDED') {
     actions.push(msg.action);
@@ -140,22 +136,13 @@ chrome.runtime.onMessage.addListener((msg) => {
 
 loadState();
 
-// ============ State ============
-
 async function loadState() {
   try {
     const state = await sendMsg({ type: 'GET_STATE' });
     if (!state) return;
-
     isRecording = state.isRecording;
     startTime = state.startTime;
-
-    if (isRecording) {
-      setRecordingUI(true);
-      startDurationTimer();
-    }
-
-    // Always try to load existing actions
+    if (isRecording) { setRecordingUI(true); startDurationTimer(); }
     const result = await sendMsg({ type: 'GET_ACTIONS' });
     if (result && result.actions && result.actions.length > 0) {
       actions = result.actions;
@@ -164,76 +151,42 @@ async function loadState() {
       updatePreview();
     }
     updateExportButtons();
-  } catch (e) {
-    console.error('[AB Recorder] loadState error:', e);
-  }
+  } catch (e) { console.error('[AB Recorder] loadState error:', e); }
 }
 
 function sendMsg(msg) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(msg, (response) => {
-      if (chrome.runtime.lastError) {
-        console.warn('[AB Recorder] Message error:', chrome.runtime.lastError.message);
-        resolve(null);
-      } else {
-        resolve(response);
-      }
+      if (chrome.runtime.lastError) { resolve(null); } else { resolve(response); }
     });
   });
 }
 
-// ============ Recording ============
-
 async function startRecording() {
   await sendMsg({ type: 'START_RECORDING' });
-  isRecording = true;
-  startTime = Date.now();
-  actions = [];
-  setRecordingUI(true);
-  startDurationTimer();
-  renderActionList();
-  updatePreview();
-  updateExportButtons();
+  isRecording = true; startTime = Date.now(); actions = [];
+  setRecordingUI(true); startDurationTimer(); renderActionList(); updatePreview(); updateExportButtons();
 }
 
 async function stopRecording() {
   await sendMsg({ type: 'STOP_RECORDING' });
   isRecording = false;
-  // Reload from storage
   const result = await sendMsg({ type: 'GET_ACTIONS' });
   if (result && result.actions) actions = result.actions;
-  setRecordingUI(false);
-  stopDurationTimer();
-  renderActionList();
-  actionCountEl.textContent = actions.length;
-  updatePreview();
-  updateExportButtons();
+  setRecordingUI(false); stopDurationTimer(); renderActionList();
+  actionCountEl.textContent = actions.length; updatePreview(); updateExportButtons();
 }
 
 async function clearRecording() {
   await sendMsg({ type: 'CLEAR_ACTIONS' });
-  actions = [];
-  renderActionList();
-  actionCountEl.textContent = '0';
-  previewCode.textContent = '// Start recording to see commands here';
-  updateExportButtons();
+  actions = []; renderActionList(); actionCountEl.textContent = '0';
+  previewCode.textContent = '// Start recording to see commands here'; updateExportButtons();
 }
 
-// ============ UI ============
-
 function setRecordingUI(recording) {
-  btnRecord.disabled = recording;
-  btnStop.disabled = !recording;
-  btnClear.disabled = recording;
-  if (recording) {
-    statusDot.classList.add('recording');
-    statusText.textContent = 'Recording...';
-    btnRecord.classList.add('recording');
-  } else {
-    statusDot.classList.remove('recording');
-    statusText.textContent = actions.length > 0 ? `${actions.length} actions` : 'Ready';
-    btnRecord.classList.remove('recording');
-  }
+  btnRecord.disabled = recording; btnStop.disabled = !recording; btnClear.disabled = recording;
+  if (recording) { statusDot.classList.add('recording'); statusText.textContent = 'Recording...'; btnRecord.classList.add('recording'); }
+  else { statusDot.classList.remove('recording'); statusText.textContent = actions.length > 0 ? `${actions.length} actions` : 'Ready'; btnRecord.classList.remove('recording'); }
 }
 
 function startDurationTimer() {
@@ -244,112 +197,49 @@ function startDurationTimer() {
   }, 1000);
 }
 
-function stopDurationTimer() {
-  if (durationInterval) clearInterval(durationInterval);
-  durationInterval = null;
-}
+function stopDurationTimer() { if (durationInterval) clearInterval(durationInterval); durationInterval = null; }
 
 function updateExportButtons() {
-  const hasActions = actions.length > 0;
-  btnExportShell.disabled = !hasActions;
-  btnExportJSON.disabled = !hasActions;
-  btnCopyCommands.disabled = !hasActions;
+  const has = actions.length > 0;
+  btnExportShell.disabled = !has; btnExportJSON.disabled = !has; btnCopyCommands.disabled = !has;
 }
 
 function renderActionList() {
   actionList.innerHTML = '';
-  if (actions.length === 0) {
-    actionList.innerHTML = '<div class="empty-state"><span class="empty-icon">🎬</span><p>Click <strong>Record</strong> to start capturing</p><p class="hint">Shortcut: Cmd+Shift+R</p></div>';
-    return;
-  }
+  if (actions.length === 0) { actionList.innerHTML = '<div class="empty-state"><span class="empty-icon">🎬</span><p>Click <strong>Record</strong> to start capturing</p><p class="hint">Shortcut: Cmd+Shift+R</p></div>'; return; }
   actions.forEach(a => addActionToList(a));
 }
 
-const iconMap = {
-  click: '👆', dblclick: '👆👆', type: '⌨️', select: '📋',
-  check: '✅', uncheck: '⬜', hover: '🖐', press: '⌨️',
-  navigate: '🔗', scroll: '📜', tab_new: '➕', tab_close: '❌',
-  tab_switch: '🔄', back: '⬅️', forward: '➡️', reload: '🔄'
-};
+const iconMap = { click: '👆', dblclick: '👆👆', type: '⌨️', select: '📋', check: '✅', uncheck: '⬜', hover: '🖐', press: '⌨️', navigate: '🔗', scroll: '📜' };
 
 function addActionToList(action) {
-  const empty = actionList.querySelector('.empty-state');
-  if (empty) empty.remove();
-  const item = document.createElement('div');
-  item.className = 'action-item';
+  const empty = actionList.querySelector('.empty-state'); if (empty) empty.remove();
+  const item = document.createElement('div'); item.className = 'action-item';
   const locator = action.locator || {};
-  item.innerHTML = `
-    <div class="action-icon ${action.type}">${iconMap[action.type] || '❓'}</div>
-    <div class="action-details">
-      <div class="action-type">${action.type}</div>
-      <div class="action-desc">${escapeHtml(action.description || '')}</div>
-      <div class="action-command">${escapeHtml(translateCommand(action, locator))}</div>
-    </div>`;
-  actionList.appendChild(item);
-  actionList.scrollTop = actionList.scrollHeight;
+  item.innerHTML = `<div class="action-icon ${action.type}">${iconMap[action.type] || '❓'}</div><div class="action-details"><div class="action-type">${action.type}</div><div class="action-desc">${escapeHtml(action.description || '')}</div><div class="action-command">${escapeHtml(translateCommand(action, locator))}</div></div>`;
+  actionList.appendChild(item); actionList.scrollTop = actionList.scrollHeight;
 }
 
 function updatePreview() {
-  if (actions.length === 0) {
-    previewCode.textContent = '// Start recording to see commands here';
-  } else {
-    previewCode.textContent = actions.map(a => translateCommand(a, a.locator || {})).join('\n');
-  }
+  previewCode.textContent = actions.length === 0 ? '// Start recording to see commands here' : actions.map(a => translateCommand(a, a.locator || {})).join('\n');
 }
-
-// ============ Export (chrome.downloads API) ============
 
 function downloadExport(format) {
   if (actions.length === 0) return;
-
   const wrapped = actions.map(a => ({ action: a, locator: a.locator || {} }));
   let content, filename;
-
-  if (format === 'shell') {
-    content = generateScript(wrapped);
-    filename = 'agent-browser-recording.sh';
-  } else {
-    content = generateBatchCommands(wrapped);
-    filename = 'agent-browser-commands.json';
-  }
-
-  const blob = new Blob([content], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-
-  // Use chrome.downloads to save directly to default downloads folder
-  chrome.downloads.download({
-    url: url,
-    filename: filename,
-    saveAs: false  // false = save directly to default downloads folder, no dialog
-  }, (downloadId) => {
-    if (chrome.runtime.lastError) {
-      console.error('[AB Recorder] Download failed:', chrome.runtime.lastError.message);
-      // Fallback: open blob URL in new tab
-      window.open(url, '_blank');
-    } else {
-      // Flash the button to confirm
-      const btn = format === 'shell' ? btnExportShell : btnExportJSON;
-      const orig = btn.textContent;
-      btn.textContent = '✅ Saved!';
-      setTimeout(() => { btn.textContent = orig; }, 2000);
-    }
+  if (format === 'shell') { content = generateScript(wrapped); filename = 'agent-browser-recording.sh'; }
+  else { content = generateBatchCommands(wrapped); filename = 'agent-browser-commands.json'; }
+  const url = URL.createObjectURL(new Blob([content], { type: 'text/plain' }));
+  chrome.downloads.download({ url, filename, saveAs: false }, (id) => {
+    if (chrome.runtime.lastError) { window.open(url, '_blank'); }
+    else { const btn = format === 'shell' ? btnExportShell : btnExportJSON; const orig = btn.textContent; btn.textContent = '✅ Saved!'; setTimeout(() => { btn.textContent = orig; }, 2000); }
   });
 }
 
 async function copyCommands() {
   if (actions.length === 0) return;
-  const text = actions.map(a => translateCommand(a, a.locator || {})).join('\n');
-  try {
-    await navigator.clipboard.writeText(text);
-    btnCopyCommands.textContent = '✅ Copied!';
-    setTimeout(() => { btnCopyCommands.textContent = '📋 Copy'; }, 2000);
-  } catch (e) {
-    console.error('Copy failed:', e);
-  }
+  try { await navigator.clipboard.writeText(actions.map(a => translateCommand(a, a.locator || {})).join('\n')); btnCopyCommands.textContent = '✅ Copied!'; setTimeout(() => { btnCopyCommands.textContent = '📋 Copy'; }, 2000); } catch (e) { console.error('Copy failed:', e); }
 }
 
-function escapeHtml(str) {
-  const d = document.createElement('div');
-  d.textContent = str;
-  return d.innerHTML;
-}
+function escapeHtml(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }

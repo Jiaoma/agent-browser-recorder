@@ -1,11 +1,19 @@
 /**
  * Content Script — Records user interactions on the page.
- * Captures: clicks, double-clicks, typing, selects, scrolls, keyboard shortcuts, navigation.
+ * Generates agent-browser compatible commands.
  *
- * Communication: uses chrome.runtime.sendMessage / onMessage (simple messaging, not port).
+ * Locator priority (adjusted for reliability):
+ *   1. data-testid → find testid <value>
+ *   2. Label text → find label <text>
+ *   3. Placeholder → find placeholder <text>
+ *   4. Element text content → find text <text>
+ *   5. CSS selector → direct click/fill
+ *
+ * NOTE: `find role` is avoided because it's unreliable in current agent-browser.
+ *       `find text` is the most reliable semantic locator.
  */
 
-// ============ Selector Utilities (inlined) ============
+// ============ Selector Utilities ============
 
 function buildSelector(el) {
   if (!el || el === document.body || el === document.documentElement) return 'body';
@@ -65,40 +73,71 @@ function describeElement(el) {
   return parts.join(' ');
 }
 
-function getImplicitRole(el) {
-  const tag = el.tagName.toLowerCase();
-  const type = el.type?.toLowerCase();
-  const roleMap = {
-    button: 'button', a: 'link',
-    input: type === 'checkbox' ? 'checkbox' : type === 'radio' ? 'radio' : type === 'submit' ? 'button' : 'textbox',
-    select: 'combobox', textarea: 'textbox',
-    h1: 'heading', h2: 'heading', h3: 'heading', h4: 'heading', h5: 'heading', h6: 'heading',
-    nav: 'navigation', main: 'main', header: 'banner', footer: 'contentinfo', form: 'form',
-    table: 'table', ul: 'list', ol: 'list',
-  };
-  return roleMap[tag] || null;
-}
-
-function getTextContent(el) {
-  const text = (el.textContent || '').trim();
-  return text.length <= 80 ? text : text.substring(0, 80);
-}
-
-function getAgentBrowserLocator(el) {
-  if (el.dataset.testid) return { type: 'testid', value: el.dataset.testid };
-  const role = el.getAttribute('role') || getImplicitRole(el);
+/**
+ * Get the best short text to identify an element.
+ * For buttons/links, use their direct text content (not nested children).
+ * For other elements, use aria-label, title, or a short description.
+ */
+function getElementText(el) {
+  // Prefer aria-label
   const ariaLabel = el.getAttribute('aria-label');
-  const accessibleName = ariaLabel || getTextContent(el);
-  if (role && accessibleName) return { type: 'role', role, value: accessibleName };
+  if (ariaLabel) return ariaLabel.trim();
+
+  // For elements with direct text nodes (buttons, links, headings)
+  const tag = el.tagName.toLowerCase();
+  if (['a', 'button', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'summary', 'label'].includes(tag)) {
+    // Get direct text only (first text node), not nested children
+    const directText = Array.from(el.childNodes)
+      .filter(n => n.nodeType === Node.TEXT_NODE)
+      .map(n => n.textContent.trim())
+      .filter(t => t.length > 0)
+      .join(' ')
+      .trim();
+    if (directText) return directText.substring(0, 80);
+
+    // Fallback: full text content but truncated
+    const fullText = (el.textContent || '').trim();
+    if (fullText) return fullText.substring(0, 80);
+  }
+
+  // Title attribute
+  if (el.title) return el.title.trim();
+
+  // Value for inputs
+  if (el.value && ['input', 'textarea'].includes(tag)) return el.value.substring(0, 50);
+
+  return null;
+}
+
+/**
+ * Build the best agent-browser locator for an element.
+ * Priority: testid > label > placeholder > text > css
+ */
+function buildLocator(el) {
+  // 1. data-testid
+  if (el.dataset.testid) {
+    return { strategy: 'testid', value: el.dataset.testid };
+  }
+
+  // 2. Label association
   if (el.labels && el.labels.length > 0) {
     const labelText = el.labels[0].textContent.trim();
-    if (labelText) return { type: 'label', value: labelText };
+    if (labelText) return { strategy: 'label', value: labelText };
   }
-  if (el.placeholder) return { type: 'placeholder', value: el.placeholder };
-  const text = getTextContent(el);
-  if (text && (el.tagName === 'A' || el.tagName === 'BUTTON' || role === 'button'))
-    return { type: 'text', value: text };
-  return { type: 'css', value: buildSelector(el) };
+
+  // 3. Placeholder
+  if (el.placeholder) {
+    return { strategy: 'placeholder', value: el.placeholder };
+  }
+
+  // 4. Text content (most reliable for agent-browser's `find text`)
+  const text = getElementText(el);
+  if (text && text.length > 0) {
+    return { strategy: 'text', value: text };
+  }
+
+  // 5. CSS selector fallback
+  return { strategy: 'css', value: buildSelector(el) };
 }
 
 // ============ Recording State ============
@@ -109,7 +148,7 @@ let lastTypedValue = '';
 let typingTimer = null;
 let currentUrl = location.href;
 
-// ============ Message Handling (simple onMessage, NOT port) ============
+// ============ Message Handling ============
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.type) {
@@ -122,7 +161,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ success: true });
       break;
     case 'PING':
-      // Health check — content script is alive
       sendResponse({ alive: true, isRecording });
       break;
   }
@@ -136,14 +174,12 @@ function startRecording() {
   isRecording = true;
   lastTypedElement = null;
   lastTypedValue = '';
-  // Record initial navigation
   recordAction({
     type: 'navigate', url: location.href,
     description: `Navigate to ${location.href}`
   });
   attachListeners();
   showRecordingIndicator();
-  console.log('[AB Recorder] Recording started');
 }
 
 function stopRecording() {
@@ -152,18 +188,16 @@ function stopRecording() {
   detachListeners();
   hideRecordingIndicator();
   flushTyping();
-  console.log('[AB Recorder] Recording stopped');
 }
 
 function recordAction(action) {
   if (!isRecording) return;
   const entry = { ...action, timestamp: Date.now(), url: action.url || location.href };
-  // Send to background to store
-  chrome.runtime.sendMessage({
-    type: 'ACTION_RECORDED',
-    action: entry
-  }).catch(() => {});
-  // Update on-page counter
+  if (action.elementInfo) {
+    entry.locator = buildLocator(action.elementInfo);
+    delete entry.elementInfo;
+  }
+  chrome.runtime.sendMessage({ type: 'ACTION_RECORDED', action: entry }).catch(() => {});
   const countEl = document.getElementById('ab-action-count');
   if (countEl) {
     const current = parseInt(countEl.textContent) || 0;
@@ -177,69 +211,38 @@ function handleClick(e) {
   if (!isRecording || isRecorderElement(e.target)) return;
   flushTyping();
   const el = e.target;
-  recordAction({
-    type: 'click',
-    locator: getAgentBrowserLocator(el),
-    cssSelector: buildSelector(el),
-    description: `Click ${describeElement(el)}`
-  });
+  recordAction({ type: 'click', elementInfo: el, cssSelector: buildSelector(el), description: `Click ${describeElement(el)}` });
   highlightElement(el);
 }
 
 function handleDblClick(e) {
   if (!isRecording || isRecorderElement(e.target)) return;
   const el = e.target;
-  recordAction({
-    type: 'dblclick',
-    locator: getAgentBrowserLocator(el),
-    cssSelector: buildSelector(el),
-    description: `Double-click ${describeElement(el)}`
-  });
+  recordAction({ type: 'dblclick', elementInfo: el, cssSelector: buildSelector(el), description: `Double-click ${describeElement(el)}` });
 }
 
 function handleInput(e) {
   if (!isRecording || isRecorderElement(e.target)) return;
   const el = e.target;
   const tag = el.tagName.toLowerCase();
-
   if (tag === 'select') {
     flushTyping();
-    recordAction({
-      type: 'select', value: el.value,
-      locator: getAgentBrowserLocator(el),
-      cssSelector: buildSelector(el),
-      description: `Select "${el.value}" in ${describeElement(el)}`
-    });
+    recordAction({ type: 'select', value: el.value, elementInfo: el, cssSelector: buildSelector(el), description: `Select "${el.value}" in ${describeElement(el)}` });
     return;
   }
-
   if (tag === 'input' || tag === 'textarea') {
     const inputType = el.type?.toLowerCase();
     if (inputType === 'checkbox') {
       flushTyping();
-      recordAction({
-        type: el.checked ? 'check' : 'uncheck',
-        locator: getAgentBrowserLocator(el),
-        cssSelector: buildSelector(el),
-        description: `${el.checked ? 'Check' : 'Uncheck'} ${describeElement(el)}`
-      });
+      recordAction({ type: el.checked ? 'check' : 'uncheck', elementInfo: el, cssSelector: buildSelector(el), description: `${el.checked ? 'Check' : 'Uncheck'} ${describeElement(el)}` });
       return;
     }
     if (inputType === 'radio') {
       flushTyping();
-      recordAction({
-        type: 'click',
-        locator: getAgentBrowserLocator(el),
-        cssSelector: buildSelector(el),
-        description: `Select radio ${describeElement(el)}`
-      });
+      recordAction({ type: 'click', elementInfo: el, cssSelector: buildSelector(el), description: `Select radio ${describeElement(el)}` });
       return;
     }
-    // Accumulate typing
-    if (el !== lastTypedElement) {
-      flushTyping();
-      lastTypedElement = el;
-    }
+    if (el !== lastTypedElement) { flushTyping(); lastTypedElement = el; }
     lastTypedValue = el.value;
     clearTimeout(typingTimer);
     typingTimer = setTimeout(() => flushTyping(), 1500);
@@ -248,13 +251,7 @@ function handleInput(e) {
 
 function flushTyping() {
   if (lastTypedElement && lastTypedValue !== undefined) {
-    const el = lastTypedElement;
-    recordAction({
-      type: 'type', value: lastTypedValue,
-      locator: getAgentBrowserLocator(el),
-      cssSelector: buildSelector(el),
-      description: `Type "${lastTypedValue.substring(0, 50)}" into ${describeElement(el)}`
-    });
+    recordAction({ type: 'type', value: lastTypedValue, elementInfo: lastTypedElement, cssSelector: buildSelector(lastTypedElement), description: `Type into ${describeElement(lastTypedElement)}` });
   }
   lastTypedElement = null;
   lastTypedValue = '';
@@ -265,7 +262,6 @@ function handleKeydown(e) {
   if (!isRecording || isRecorderElement(e.target)) return;
   const specialKeys = ['Enter', 'Tab', 'Escape', 'Backspace', 'Delete'];
   if (specialKeys.includes(e.key)) {
-    // Don't record Enter on input fields (it's part of form submit)
     if (e.key === 'Enter' && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
     flushTyping();
     recordAction({ type: 'press', key: e.key, description: `Press ${e.key}` });
@@ -292,17 +288,11 @@ function handleHover(e) {
   const el = e.target;
   const tag = el.tagName.toLowerCase();
   const role = el.getAttribute('role');
-  const isInteractive = ['a', 'button', 'input', 'select', 'textarea'].includes(tag) ||
-    ['button', 'link', 'menuitem', 'tab'].includes(role);
+  const isInteractive = ['a', 'button', 'input', 'select', 'textarea'].includes(tag) || ['button', 'link', 'menuitem', 'tab'].includes(role);
   if (isInteractive) {
     clearTimeout(hoverTimer);
     hoverTimer = setTimeout(() => {
-      recordAction({
-        type: 'hover',
-        locator: getAgentBrowserLocator(el),
-        cssSelector: buildSelector(el),
-        description: `Hover over ${describeElement(el)}`
-      });
+      recordAction({ type: 'hover', elementInfo: el, cssSelector: buildSelector(el), description: `Hover over ${describeElement(el)}` });
     }, 800);
   }
 }
@@ -311,13 +301,10 @@ function handlePopState() {
   if (!isRecording) return;
   flushTyping();
   const newUrl = location.href;
-  if (newUrl !== currentUrl) {
-    currentUrl = newUrl;
-    recordAction({ type: 'navigate', url: newUrl, description: `Navigate to ${newUrl}` });
-  }
+  if (newUrl !== currentUrl) { currentUrl = newUrl; recordAction({ type: 'navigate', url: newUrl, description: `Navigate to ${newUrl}` }); }
 }
 
-// ============ Attach / Detach Listeners ============
+// ============ Listeners ============
 
 function attachListeners() {
   document.addEventListener('click', handleClick, true);
@@ -343,16 +330,16 @@ function detachListeners() {
 
 function showRecordingIndicator() {
   if (document.getElementById('ab-recorder-indicator')) return;
-  const indicator = document.createElement('div');
-  indicator.id = 'ab-recorder-indicator';
-  indicator.innerHTML = '<span class="ab-dot"></span><span class="ab-text">REC</span><span class="ab-count" id="ab-action-count">0</span>';
-  document.body.appendChild(indicator);
+  const el = document.createElement('div');
+  el.id = 'ab-recorder-indicator';
+  el.innerHTML = '<span class="ab-dot"></span><span class="ab-text">REC</span><span class="ab-count" id="ab-action-count">0</span>';
+  document.body.appendChild(el);
 }
 
 function hideRecordingIndicator() {
-  const indicator = document.getElementById('ab-recorder-indicator');
-  if (indicator) indicator.remove();
-  document.querySelectorAll('.ab-highlight').forEach(el => el.remove());
+  const el = document.getElementById('ab-recorder-indicator');
+  if (el) el.remove();
+  document.querySelectorAll('.ab-highlight').forEach(e => e.remove());
 }
 
 function highlightElement(el) {
