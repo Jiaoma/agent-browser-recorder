@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head><title>AB Recorder Test</title></head>
+<body>
+<h1>Recorder Test Page</h1>
+<button id="btn1">Click Me</button>
+<input id="inp1" placeholder="Type here">
+<a href="#">A Link</a>
+<select><option>Option 1</option><option>Option 2</option></select>
+<pre id="log" style="background:#111;color:#0f0;padding:16px;margin-top:16px;font-size:12px;"></pre>
+<script>
+const log = document.getElementById('log');
+function addLog(msg) {
+  log.textContent += new Date().toISOString().substr(11,8) + ' ' + msg + '\n';
+}
+
+addLog('Page loaded');
+
+// Check if content script is loaded by looking for its side effects
+setTimeout(() => {
+  addLog('Checking for content script...');
+  // Content script adds console.log('[AB Recorder] Content script loaded')
+  // We can't directly detect this, but we can check if clicking triggers anything
+  
+  // Listen for injected elements
+  const observer = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      for (const node of m.addedNodes) {
+        if (node.id === 'ab-recorder-indicator') {
+          addLog('✅ Recording indicator detected! Content script is active.');
+        }
+      }
+    }
+  });
+  observer.observe(document.body, { childList: true });
+  addLog('MutationObserver set up, waiting for recording indicator...');
+}, 1000);
+</script>
+</body>
+</html>
