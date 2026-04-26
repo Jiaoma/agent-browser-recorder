@@ -212,6 +212,11 @@ function recordAction(action) {
   if (action.key !== undefined) entry.key = action.key;
   if (action.direction !== undefined) entry.direction = action.direction;
   if (action.amount !== undefined) entry.amount = action.amount;
+  // extract_table fields
+  if (action.tableIndex !== undefined) entry.tableIndex = action.tableIndex;
+  if (action.rowIndex !== undefined) entry.rowIndex = action.rowIndex;
+  if (action.headers !== undefined) entry.headers = action.headers;
+  if (action.rowData !== undefined) entry.rowData = action.rowData;
 
   console.log('[AB Recorder] Action:', entry.type, entry.description || '');
 
@@ -238,6 +243,32 @@ function handleClick(e) {
   if (abDrag.moved) { abDrag.moved = false; return; }
   flushTyping();
   const el = e.target;
+
+  // Check if click is inside a table → record extract_table instead of plain click
+  const table = el.closest('table');
+  if (table) {
+    const row = el.closest('tr');
+    if (row) {
+      // Extract table info for the script generator
+      const tableSelector = buildSelector(table);
+      const rowIndex = Array.from(table.querySelectorAll('tr')).indexOf(row);
+      const headers = extractTableHeaders(table);
+      const rowData = extractRowData(row);
+      recordAction({
+        type: 'extract_table',
+        elementInfo: el,
+        cssSelector: tableSelector,
+        tableIndex: getTableIndex(table),
+        rowIndex,
+        headers,
+        rowData,
+        description: `Extract table row ${rowIndex + 1}: ${rowData.join(' | ')}`
+      });
+      highlightElement(table);
+      return;
+    }
+  }
+
   recordAction({
     type: 'click',
     elementInfo: el,
@@ -245,6 +276,24 @@ function handleClick(e) {
     description: `Click ${describeElement(el)}`
   });
   highlightElement(el);
+}
+
+// Find which table on the page this is (0-indexed)
+function getTableIndex(table) {
+  const tables = document.querySelectorAll('table');
+  return Array.from(tables).indexOf(table);
+}
+
+// Extract header labels from a table
+function extractTableHeaders(table) {
+  const headerRow = table.querySelector('thead tr') || table.querySelector('tr');
+  if (!headerRow) return [];
+  return Array.from(headerRow.querySelectorAll('th, td')).map(c => c.innerText.trim()).filter(Boolean);
+}
+
+// Extract cell data from a row
+function extractRowData(row) {
+  return Array.from(row.querySelectorAll('td, th')).map(c => c.innerText.trim());
 }
 
 function handleDblClick(e) {

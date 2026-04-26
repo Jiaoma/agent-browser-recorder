@@ -2,13 +2,15 @@
  * Translator — Generate scripts for agent-browser playback.
  *
  * Three export formats:
- *   1. .sh  — Bash script with ab_ref helper (snapshot → grep → @ref)
- *   2. .json — agent-browser batch format (direct execution via stdin)
- *   3. .js  — Node.js script (most reliable: snapshot → JSON parse → @ref → act)
+ *   1. .js  — Node.js script (recommended)
+ *   2. .sh  — Bash script with ab_ref helper
+ *   3. .json — agent-browser batch format
  *
- * The .js format is recommended because it uses agent-browser's --json output
- * to programmatically find the correct ref, matching the snapshot-and-ref workflow
- * described in agent-browser's core skill.
+ * Supports action types:
+ *   navigate, click, dblclick, type, select, check, uncheck, hover, focus,
+ *   press, back, forward, reload, scroll, extract_table
+ *
+ * extract_table uses `agent-browser eval --stdin` to extract structured data.
  */
 
 function shellQuote(str) {
@@ -50,6 +52,11 @@ function getSearchTerm(action, locator) {
 
 function translateCommandPreview(action, locator) {
   if (action.type === 'navigate') return `open ${action.url}`;
+  if (action.type === 'extract_table') {
+    const idx = action.tableIndex !== undefined ? action.tableIndex : 0;
+    const row = action.rowIndex !== undefined ? action.rowIndex : 0;
+    return `eval → extract table[${idx}] row[${row}]`;
+  }
   if (isSimpleAction(action.type)) return cmdForSimpleAction(action).join(' ');
   const search = getSearchTerm(action, locator);
   const abAction = { click:'click', dblclick:'dblclick', type:'fill', select:'fill',
@@ -60,6 +67,33 @@ function translateCommandPreview(action, locator) {
     return `snapshot → @ref(${search}) → ${abAction}`;
   }
   return `${abAction} ${action.cssSelector || 'body'}`;
+}
+
+// ============ extract_table JS generator ============
+
+function extractTableEvalCode(action) {
+  const tableIdx = action.tableIndex || 0;
+  const rowIdx = action.rowIndex !== undefined ? action.rowIndex : -1;
+  const hasHeaders = action.headers && action.headers.length > 0;
+
+  if (rowIdx >= 0) {
+    // Extract specific row
+    if (hasHeaders) {
+      return `(function(){const ts=document.querySelectorAll('table');if(!ts[${tableIdx}]){throw new Error('table ${tableIdx} not found')}const t=ts[${tableIdx}];const r=t.querySelectorAll('tr')[${rowIdx}];if(!r){throw new Error('row ${rowIdx} not found')}const cells=Array.from(r.querySelectorAll('td,th')).map(c=>c.innerText.trim());const headers=${JSON.stringify(action.headers)};const obj={};headers.forEach((h,i)=>{obj[h]=cells[i]||''});return obj})()`;
+    }
+    return `(function(){const t=document.querySelectorAll('table')[${tableIdx}];const r=t.querySelectorAll('tr')[${rowIdx}];return Array.from(r.querySelectorAll('td,th')).map(c=>c.innerText.trim())})()`;
+  }
+
+  // Extract entire table
+  return `(function(){const t=document.querySelectorAll('table')[${tableIdx}];return Array.from(t.querySelectorAll('tr')).map(r=>Array.from(r.querySelectorAll('td,th')).map(c=>c.innerText.trim()))})()`;
+}
+
+function extractAllTablesEvalCode() {
+  return `Array.from(document.querySelectorAll('table')).map(t=>({` +
+    `headers:Array.from(t.querySelectorAll('th')).map(c=>c.innerText.trim),` +
+    `rows:Array.from(t.querySelectorAll('tbody tr, tr')).map(r=>` +
+    `Array.from(r.querySelectorAll('td')).map(c=>c.innerText.trim))` +
+    `}));`;
 }
 
 // ============ .js Script (Node.js — recommended) ============
@@ -75,6 +109,14 @@ function generateJsScript(actions) {
 
   for (const { action, locator } of actions) {
     if (action.type === 'navigate') continue;
+
+    // extract_table
+    if (action.type === 'extract_table') {
+      const evalCode = extractTableEvalCode(action);
+      steps.push(`  data = await abEval(${jsQuote(evalCode)});`);
+      steps.push(`  log('📊', 'Extracted: ' + JSON.stringify(data));`);
+      continue;
+    }
 
     if (isSimpleAction(action.type)) {
       const cmd = cmdForSimpleAction(action);
@@ -136,6 +178,14 @@ function ab(...args) {
   }
 }
 
+function abEval(jsCode) {
+  // Use argument mode (not --stdin) for reliability
+  const result = execSync('agent-browser eval ' + JSON.stringify(jsCode), {
+    encoding: 'utf8', timeout: 20000
+  });
+  try { return JSON.parse(result); } catch { return result; }
+}
+
 function findRef(searchText) {
   try {
     const out = execSync('agent-browser snapshot -i --json', { encoding: 'utf8', timeout: 10000 });
@@ -160,7 +210,7 @@ function log(icon, msg) {
 }
 
 async function main() {
-  let ref;
+  let ref, data;
 ${steps.join('\n')}
   log('🎬', 'Script complete');
 }
@@ -181,6 +231,10 @@ function generateScript(actions) {
     'ab_ref() {',
     '  agent-browser snapshot -i 2>/dev/null | grep -i "$1" | head -1 | grep -o "ref=e[0-9]*" | cut -d= -f2',
     '}',
+    '',
+    'ab_eval() {',
+    '  agent-browser eval "$1"',
+    '}',
     ''
   ];
   const firstNav = actions.find(a => a.action.type === 'navigate');
@@ -192,6 +246,13 @@ function generateScript(actions) {
   for (const { action, locator } of actions) {
     if (action.type === 'navigate') continue;
     if (action.description) lines.push(`# ${action.description}`);
+
+    if (action.type === 'extract_table') {
+      const evalCode = extractTableEvalCode(action);
+      lines.push(`ab_eval ${shellQuote(evalCode)}`);
+      lines.push(''); continue;
+    }
+
     if (isSimpleAction(action.type)) {
       lines.push(`agent-browser ${cmdForSimpleAction(action).join(' ')}`);
       lines.push(''); continue;
@@ -229,14 +290,19 @@ function generateBatchCommands(actions) {
   if (firstNav) { commands.push(['open', firstNav.action.url]); commands.push(['wait','--load','networkidle']); }
   for (const { action, locator } of actions) {
     if (action.type === 'navigate') continue;
+
+    if (action.type === 'extract_table') {
+      const evalCode = extractTableEvalCode(action);
+      commands.push(['eval', '--stdin', evalCode]);
+      continue;
+    }
+
     if (isSimpleAction(action.type)) { commands.push(cmdForSimpleAction(action)); continue; }
     const abAction = { click:'click', dblclick:'dblclick', type:'fill', select:'fill',
                        check:'check', uncheck:'uncheck', hover:'hover', focus:'focus' }[action.type] || 'click';
     const isFill = action.type === 'type' || action.type === 'select';
     const search = getSearchTerm(action, locator);
     if (search) {
-      // Batch can't do dynamic ref lookup, so include a comment/note
-      // Use find text as fallback for batch mode
       if (isFill) commands.push(['find', 'text', search, 'fill', action.value]);
       else commands.push(['find', 'text', search, abAction]);
     } else {

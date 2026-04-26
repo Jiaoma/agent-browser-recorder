@@ -16,8 +16,11 @@ function cmdForSimpleAction(a){switch(a.type){case'navigate':return['open',a.url
 function isSimpleAction(t){return['press','back','forward','reload','scroll'].includes(t)}
 function getSearchTerm(a,l){if(l&&l.value)return l.value;if(a.description){const m=a.description.match(/"([^"]+)"/);if(m)return m[1]}return''}
 
+function extractTableEvalCode(a){const ti=a.tableIndex||0,ri=a.rowIndex!=null?a.rowIndex:-1,h=a.headers&&a.headers.length>0;if(ri>=0){if(h)return`(function(){const ts=document.querySelectorAll('table');if(!ts[${ti}]){throw new Error('table ${ti} not found')}const t=ts[${ti}];const r=t.querySelectorAll('tr')[${ri}];if(!r){throw new Error('row ${ri} not found')}const cells=Array.from(r.querySelectorAll('td,th')).map(c=>c.innerText.trim());const headers=${JSON.stringify(a.headers)};const obj={};headers.forEach((h,i)=>{obj[h]=cells[i]||''});return obj})()`;return`(function(){const t=document.querySelectorAll('table')[${ti}];const r=t.querySelectorAll('tr')[${ri}];return Array.from(r.querySelectorAll('td,th')).map(c=>c.innerText.trim())})()`}return`(function(){const t=document.querySelectorAll('table')[${ti}];return Array.from(t.querySelectorAll('tr')).map(r=>Array.from(r.querySelectorAll('td,th')).map(c=>c.innerText.trim()))})()`}
+
 function translateCommandPreview(action,locator){
   if(action.type==='navigate')return`open ${action.url}`;
+  if(action.type==='extract_table'){const i=action.tableIndex||0,r=action.rowIndex!=null?action.rowIndex:0;return`eval → extract table[${i}] row[${r}]`}
   if(isSimpleAction(action.type))return cmdForSimpleAction(action).join(' ');
   const s=getSearchTerm(action,locator),ab={click:'click',dblclick:'dblclick',type:'fill',select:'fill',check:'check',uncheck:'uncheck',hover:'hover',focus:'focus'}[action.type]||'click';
   if(s){if(action.type==='type'||action.type==='select')return`snapshot → @ref(${s}) → fill ${jsQuote(action.value)}`;return`snapshot → @ref(${s}) → ${ab}`}
@@ -29,6 +32,7 @@ function generateJsScript(actions){
   if(firstNav){steps.push(`  await ab('open', ${jsQuote(firstNav.action.url)});`);steps.push(`  await ab('wait', '--load', 'networkidle');`)}
   for(const{action,locator}of actions){
     if(action.type==='navigate')continue;
+    if(action.type==='extract_table'){const ec=extractTableEvalCode(action);steps.push(`  data = await abEval(${jsQuote(ec)});`);steps.push(`  log('📊', 'Extracted: ' + JSON.stringify(data));`);continue}
     if(isSimpleAction(action.type)){const cmd=cmdForSimpleAction(action);steps.push(`  await ab(${cmd.map(c=>jsQuote(c)).join(', ')});`);continue}
     const search=getSearchTerm(action,locator);
     const abAction={click:'click',dblclick:'dblclick',type:'fill',select:'fill',check:'check',uncheck:'uncheck',hover:'hover',focus:'focus'}[action.type]||'click';
@@ -70,6 +74,13 @@ function ab(...args) {
   }
 }
 
+function abEval(jsCode) {
+  const result = execSync('agent-browser eval ' + JSON.stringify(jsCode), {
+    encoding: 'utf8', timeout: 20000
+  });
+  try { return JSON.parse(result); } catch { return result; }
+}
+
 function findRef(searchText) {
   try {
     const out = execSync('agent-browser snapshot -i --json', { encoding: 'utf8', timeout: 10000 });
@@ -90,7 +101,7 @@ function findRef(searchText) {
 function log(icon, msg) { console.log(icon + ' ' + msg); }
 
 async function main() {
-  let ref;
+  let ref, data;
 ${steps.join('\n')}
   log('🎬', 'Script complete');
 }
@@ -180,7 +191,7 @@ function renderActionList(){actionList.innerHTML='';
   actions.forEach(a=>addActionToList(a))
 }
 
-const iconMap={click:'👆',dblclick:'👆👆',type:'⌨️',select:'📋',check:'✅',uncheck:'⬜',hover:'🖐',press:'⌨️',navigate:'🔗',scroll:'📜'};
+const iconMap={click:'👆',dblclick:'👆👆',type:'⌨️',select:'📋',check:'✅',uncheck:'⬜',hover:'🖐',press:'⌨️',navigate:'🔗',scroll:'📜',extract_table:'📊'};
 
 function addActionToList(action){
   const empty=actionList.querySelector('.empty-state');if(empty)empty.remove();
