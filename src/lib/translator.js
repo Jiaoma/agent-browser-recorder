@@ -200,11 +200,25 @@ function generateJsScript(actions) {
  * Agent Browser Recorder — Auto-generated playback script
  * Generated: ${new Date().toISOString()}
  *
- * Strategy: snapshot → parse JSON → find @ref → act
  * Run: node recording.js
+ *
+ * AUTH OPTIONS (uncomment one):
+ *   // Option A: Reuse Chrome login state (requires Chrome closed)
+ *   // execSync('agent-browser --profile Default open about:blank');
+ *   // Option B: Save/restore auth state after manual login
+ *   //   1. agent-browser open https://example.com && login manually
+ *   //   2. agent-browser state save ./auth.json
+ *   //   3. Uncomment: execSync('agent-browser state load ./auth.json');
+ *   // Option C: Connect to running Chrome with auth
+ *   //   agent-browser --auto-connect ... (requires Chrome with --remote-debugging-port)
  */
 
 const { execSync } = require('child_process');
+
+// ===== AUTH CONFIG — uncomment & edit if your page requires login =====
+// const AUTH_STATE = './auth.json';  // Path to saved state file
+// if (AUTH_STATE) { execSync('agent-browser state load ' + AUTH_STATE); }
+// =====================================================================
 
 function ab(...args) {
   const cmd = args.join(' ');

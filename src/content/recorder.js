@@ -342,12 +342,35 @@ function findGridTable(el) {
   // Walk up the DOM to find a container with repeated row-like children
   let current = el.parentElement;
   for (let depth = 0; depth < 8 && current; depth++) {
+    // Skip navigation, lists, menus — not tables
+    const tag = current.tagName.toLowerCase();
+    if (['nav','ul','ol','menu','aside','header','footer'].includes(tag)) {
+      current = current.parentElement; continue;
+    }
+    const role = current.getAttribute('role');
+    if (['navigation','menu','menubar','sidebar','complementary'].includes(role)) {
+      current = current.parentElement; continue;
+    }
+
     const children = Array.from(current.children);
     if (children.length >= 2) {
       const childSigs = children.map(c => getStructSig(c));
       const firstSig = childSigs[0];
-      // At least 2 children share the same structure → looks like rows
-      if (firstSig && childSigs.filter(s => s === firstSig).length >= 2) {
+      // At least 2 children share the same structure AND each child has sub-elements
+      // (a real table row has multiple cells, not just a single text node)
+      const matchCount = childSigs.filter(s => s === firstSig).length;
+      if (firstSig && matchCount >= 2 && matchCount >= children.length * 0.6) {
+        // Check that children actually look like rows (have sub-elements)
+        const sampleChild = children[0];
+        const childTag = sampleChild.tagName.toLowerCase();
+        // Skip if children are <li> without nested structure (plain lists)
+        if (childTag === 'li' && sampleChild.children.length <= 1) {
+          current = current.parentElement; continue;
+        }
+        // Skip if all children are just single text nodes (not tabular)
+        const avgChildren = children.reduce((sum, c) => sum + c.children.length, 0) / children.length;
+        if (avgChildren < 2) { current = current.parentElement; continue; }
+
         let targetRow = null;
         for (const child of children) {
           if (child.contains(el)) { targetRow = child; break; }
@@ -358,7 +381,8 @@ function findGridTable(el) {
         const firstRow = children[0];
         const headers = Array.from(firstRow.children).map(c => c.innerText.trim()).filter(Boolean);
         const rowData = Array.from(targetRow.children).map(c => c.innerText.trim());
-        // Count similar containers for tableIndex
+        // Only accept if we have multiple columns
+        if (rowData.length < 2 && headers.length < 2) { current = current.parentElement; continue; }
         const tableIndex = countSimilarContainers(current);
         return {
           tableEl: current,
