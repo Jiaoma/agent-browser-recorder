@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Agent Browser Recorder",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Record user interactions on web pages and translate them into agent-browser CLI commands.",
   "permissions": [
     "activeTab",
     "scripting",
     "storage",
-    "tabs"
+    "tabs",
+    "downloads"
   ],
   "background": {
     "service_worker": "background/service-worker.js",

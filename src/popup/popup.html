@@ -53,32 +53,33 @@
       <div class="empty-state" id="emptyState">
         <span class="empty-icon">🎬</span>
         <p>Click <strong>Record</strong> to start capturing your interactions</p>
-        <p class="hint">Shortcut: Ctrl+Shift+R</p>
+        <p class="hint">Shortcut: Cmd+Shift+R</p>
       </div>
     </div>
 
-    <!-- Export -->
-    <div class="export-section" id="exportSection" style="display:none">
+    <!-- Export — always visible, disabled when no actions -->
+    <div class="export-section">
+      <h3 class="export-title">Export</h3>
       <div class="export-buttons">
-        <button id="btnExportShell" class="btn btn-export">
-          📄 Shell Script
+        <button id="btnExportShell" class="btn btn-export" disabled>
+          📄 Export .sh
         </button>
-        <button id="btnExportBatch" class="btn btn-export">
-          📦 Batch JSON
+        <button id="btnExportJSON" class="btn btn-export" disabled>
+          📦 Export .json
         </button>
-        <button id="btnCopyCommands" class="btn btn-export">
-          📋 Copy Commands
+        <button id="btnCopyCommands" class="btn btn-export" disabled>
+          📋 Copy
         </button>
       </div>
     </div>
 
     <!-- Command Preview -->
-    <div class="preview-section" id="previewSection" style="display:none">
+    <div class="preview-section" id="previewSection">
       <h3>Commands Preview</h3>
-      <pre class="preview-code" id="previewCode"></pre>
+      <pre class="preview-code" id="previewCode">// Start recording to see commands here</pre>
     </div>
   </div>
 
-  <script src="popup.js" type="module"></script>
+  <script src="popup.js"></script>
 </body>
 </html>

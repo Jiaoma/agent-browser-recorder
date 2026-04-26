@@ -1,9 +1,12 @@
 /**
  * Popup Script — UI controller for the extension popup.
  * Self-contained (no ES module imports for Chrome Manifest V3 compatibility).
+ *
+ * Export buttons are ALWAYS visible. Disabled when no actions, enabled when actions exist.
+ * Uses chrome.downloads.download() to save directly to the browser's default download folder.
  */
 
-// ============ Translator Utilities (inlined) ============
+// ============ Translator Utilities ============
 
 function shellQuote(str) {
   if (!str) return "''";
@@ -93,21 +96,19 @@ function parseCmd(str) {
   return tokens;
 }
 
-// ============ Popup Logic ============
+// ============ DOM References ============
 
 const btnRecord = document.getElementById('btnRecord');
 const btnStop = document.getElementById('btnStop');
 const btnClear = document.getElementById('btnClear');
 const btnExportShell = document.getElementById('btnExportShell');
-const btnExportBatch = document.getElementById('btnExportBatch');
+const btnExportJSON = document.getElementById('btnExportJSON');
 const btnCopyCommands = document.getElementById('btnCopyCommands');
 const actionList = document.getElementById('actionList');
-const actionCount = document.getElementById('actionCount');
+const actionCountEl = document.getElementById('actionCount');
 const durationEl = document.getElementById('duration');
 const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
-const exportSection = document.getElementById('exportSection');
-const previewSection = document.getElementById('previewSection');
 const previewCode = document.getElementById('previewCode');
 
 let actions = [];
@@ -122,8 +123,8 @@ btnRecord.addEventListener('click', () => {
 });
 btnStop.addEventListener('click', stopRecording);
 btnClear.addEventListener('click', clearRecording);
-btnExportShell.addEventListener('click', () => exportAs('shell'));
-btnExportBatch.addEventListener('click', () => exportAs('batch'));
+btnExportShell.addEventListener('click', () => downloadExport('shell'));
+btnExportJSON.addEventListener('click', () => downloadExport('json'));
 btnCopyCommands.addEventListener('click', copyCommands);
 
 // Listen for real-time action updates from background
@@ -131,20 +132,19 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'ACTION_RECORDED') {
     actions.push(msg.action);
     addActionToList(msg.action);
-    actionCount.textContent = actions.length;
+    actionCountEl.textContent = actions.length;
     updatePreview();
-    if (actions.length > 0) showExportSection();
+    updateExportButtons();
   }
 });
 
-// Load state on popup open
 loadState();
 
-// ============ State Management ============
+// ============ State ============
 
 async function loadState() {
   try {
-    const state = await sendMessage({ type: 'GET_STATE' });
+    const state = await sendMsg({ type: 'GET_STATE' });
     if (!state) return;
 
     isRecording = state.isRecording;
@@ -155,21 +155,21 @@ async function loadState() {
       startDurationTimer();
     }
 
-    if (state.actionCount > 0) {
-      const result = await sendMessage({ type: 'GET_ACTIONS' });
-      if (result && result.actions) {
-        actions = result.actions;
-        renderActionList();
-        actionCount.textContent = actions.length;
-        showExportSection();
-      }
+    // Always try to load existing actions
+    const result = await sendMsg({ type: 'GET_ACTIONS' });
+    if (result && result.actions && result.actions.length > 0) {
+      actions = result.actions;
+      renderActionList();
+      actionCountEl.textContent = actions.length;
+      updatePreview();
     }
+    updateExportButtons();
   } catch (e) {
-    console.error('[AB Recorder] Failed to load state:', e);
+    console.error('[AB Recorder] loadState error:', e);
   }
 }
 
-function sendMessage(msg) {
+function sendMsg(msg) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(msg, (response) => {
       if (chrome.runtime.lastError) {
@@ -182,45 +182,44 @@ function sendMessage(msg) {
   });
 }
 
-// ============ Recording Controls ============
+// ============ Recording ============
 
 async function startRecording() {
-  await sendMessage({ type: 'START_RECORDING' });
+  await sendMsg({ type: 'START_RECORDING' });
   isRecording = true;
   startTime = Date.now();
   actions = [];
   setRecordingUI(true);
   startDurationTimer();
   renderActionList();
-  hideExportSection();
+  updatePreview();
+  updateExportButtons();
 }
 
 async function stopRecording() {
-  const result = await sendMessage({ type: 'STOP_RECORDING' });
+  await sendMsg({ type: 'STOP_RECORDING' });
   isRecording = false;
-  // Reload actions from storage to make sure we have them all
-  const stateResult = await sendMessage({ type: 'GET_ACTIONS' });
-  if (stateResult && stateResult.actions) {
-    actions = stateResult.actions;
-  } else if (result && result.actions) {
-    actions = result.actions;
-  }
+  // Reload from storage
+  const result = await sendMsg({ type: 'GET_ACTIONS' });
+  if (result && result.actions) actions = result.actions;
   setRecordingUI(false);
   stopDurationTimer();
   renderActionList();
-  actionCount.textContent = actions.length;
-  if (actions.length > 0) showExportSection();
+  actionCountEl.textContent = actions.length;
+  updatePreview();
+  updateExportButtons();
 }
 
 async function clearRecording() {
-  await sendMessage({ type: 'CLEAR_ACTIONS' });
+  await sendMsg({ type: 'CLEAR_ACTIONS' });
   actions = [];
   renderActionList();
-  hideExportSection();
-  actionCount.textContent = '0';
+  actionCountEl.textContent = '0';
+  previewCode.textContent = '// Start recording to see commands here';
+  updateExportButtons();
 }
 
-// ============ UI Updates ============
+// ============ UI ============
 
 function setRecordingUI(recording) {
   btnRecord.disabled = recording;
@@ -250,10 +249,17 @@ function stopDurationTimer() {
   durationInterval = null;
 }
 
+function updateExportButtons() {
+  const hasActions = actions.length > 0;
+  btnExportShell.disabled = !hasActions;
+  btnExportJSON.disabled = !hasActions;
+  btnCopyCommands.disabled = !hasActions;
+}
+
 function renderActionList() {
   actionList.innerHTML = '';
   if (actions.length === 0) {
-    actionList.innerHTML = '<div class="empty-state"><span class="empty-icon">🎬</span><p>Click <strong>Record</strong> to start capturing</p><p class="hint">Shortcut: Ctrl+Shift+R (Mac: Cmd+Shift+R)</p></div>';
+    actionList.innerHTML = '<div class="empty-state"><span class="empty-icon">🎬</span><p>Click <strong>Record</strong> to start capturing</p><p class="hint">Shortcut: Cmd+Shift+R</p></div>';
     return;
   }
   actions.forEach(a => addActionToList(a));
@@ -283,43 +289,51 @@ function addActionToList(action) {
   actionList.scrollTop = actionList.scrollHeight;
 }
 
-function showExportSection() {
-  exportSection.style.display = 'block';
-  previewSection.style.display = 'block';
-  updatePreview();
-}
-
-function hideExportSection() {
-  exportSection.style.display = 'none';
-  previewSection.style.display = 'none';
-}
-
 function updatePreview() {
-  previewCode.textContent = actions.map(a => translateCommand(a, a.locator || {})).join('\n');
+  if (actions.length === 0) {
+    previewCode.textContent = '// Start recording to see commands here';
+  } else {
+    previewCode.textContent = actions.map(a => translateCommand(a, a.locator || {})).join('\n');
+  }
 }
 
-// ============ Export ============
+// ============ Export (chrome.downloads API) ============
 
-function exportAs(format) {
+function downloadExport(format) {
   if (actions.length === 0) return;
-  let content, filename, mimeType;
+
   const wrapped = actions.map(a => ({ action: a, locator: a.locator || {} }));
+  let content, filename;
+
   if (format === 'shell') {
     content = generateScript(wrapped);
     filename = 'agent-browser-recording.sh';
-    mimeType = 'text/x-shellscript';
   } else {
     content = generateBatchCommands(wrapped);
     filename = 'agent-browser-commands.json';
-    mimeType = 'application/json';
   }
-  const blob = new Blob([content], { type: mimeType });
+
+  const blob = new Blob([content], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
+
+  // Use chrome.downloads to save directly to default downloads folder
+  chrome.downloads.download({
+    url: url,
+    filename: filename,
+    saveAs: false  // false = save directly to default downloads folder, no dialog
+  }, (downloadId) => {
+    if (chrome.runtime.lastError) {
+      console.error('[AB Recorder] Download failed:', chrome.runtime.lastError.message);
+      // Fallback: open blob URL in new tab
+      window.open(url, '_blank');
+    } else {
+      // Flash the button to confirm
+      const btn = format === 'shell' ? btnExportShell : btnExportJSON;
+      const orig = btn.textContent;
+      btn.textContent = '✅ Saved!';
+      setTimeout(() => { btn.textContent = orig; }, 2000);
+    }
+  });
 }
 
 async function copyCommands() {
@@ -328,9 +342,9 @@ async function copyCommands() {
   try {
     await navigator.clipboard.writeText(text);
     btnCopyCommands.textContent = '✅ Copied!';
-    setTimeout(() => { btnCopyCommands.textContent = '📋 Copy Commands'; }, 2000);
+    setTimeout(() => { btnCopyCommands.textContent = '📋 Copy'; }, 2000);
   } catch (e) {
-    console.error('Failed to copy:', e);
+    console.error('Copy failed:', e);
   }
 }
 
