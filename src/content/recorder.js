@@ -1,10 +1,11 @@
 /**
  * Content Script — Records user interactions on the page.
  * Captures: clicks, double-clicks, typing, selects, scrolls, keyboard shortcuts, navigation.
- * Self-contained (no ES module imports for Chrome Manifest V3 compatibility).
+ *
+ * Communication: uses chrome.runtime.sendMessage / onMessage (simple messaging, not port).
  */
 
-// ============ Selector Utilities (inlined from lib/selector.js) ============
+// ============ Selector Utilities (inlined) ============
 
 function buildSelector(el) {
   if (!el || el === document.body || el === document.documentElement) return 'body';
@@ -41,7 +42,7 @@ function buildStructuralPath(el) {
     const parent = current.parentElement;
     if (parent) {
       const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
-      if (siblings.length > 1) { selector += `:nth-of-type(${siblings.indexOf(current) + 1})`; }
+      if (siblings.length > 1) selector += `:nth-of-type(${siblings.indexOf(current) + 1})`;
     }
     parts.unshift(selector);
     current = current.parentElement;
@@ -100,33 +101,49 @@ function getAgentBrowserLocator(el) {
   return { type: 'css', value: buildSelector(el) };
 }
 
-// ============ Recording Logic ============
+// ============ Recording State ============
 
 let isRecording = false;
-let recordedActions = [];
 let lastTypedElement = null;
 let lastTypedValue = '';
 let typingTimer = null;
 let currentUrl = location.href;
 
-const port = chrome.runtime.connect({ name: 'recorder' });
+// ============ Message Handling (simple onMessage, NOT port) ============
 
-port.onMessage.addListener((msg) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.type) {
-    case 'START_RECORDING': startRecording(); break;
-    case 'STOP_RECORDING': stopRecording(); break;
+    case 'START_RECORDING':
+      startRecording();
+      sendResponse({ success: true });
+      break;
+    case 'STOP_RECORDING':
+      stopRecording();
+      sendResponse({ success: true });
+      break;
+    case 'PING':
+      // Health check — content script is alive
+      sendResponse({ alive: true, isRecording });
+      break;
   }
+  return true;
 });
+
+// ============ Recording Logic ============
 
 function startRecording() {
   if (isRecording) return;
   isRecording = true;
-  recordedActions = [];
   lastTypedElement = null;
   lastTypedValue = '';
-  recordAction({ type: 'navigate', url: location.href, description: `Navigate to ${location.href}` });
+  // Record initial navigation
+  recordAction({
+    type: 'navigate', url: location.href,
+    description: `Navigate to ${location.href}`
+  });
   attachListeners();
   showRecordingIndicator();
+  console.log('[AB Recorder] Recording started');
 }
 
 function stopRecording() {
@@ -135,17 +152,23 @@ function stopRecording() {
   detachListeners();
   hideRecordingIndicator();
   flushTyping();
-  port.postMessage({ type: 'RECORDING_COMPLETE', actions: recordedActions });
-  recordedActions = [];
+  console.log('[AB Recorder] Recording stopped');
 }
 
 function recordAction(action) {
   if (!isRecording) return;
   const entry = { ...action, timestamp: Date.now(), url: action.url || location.href };
-  recordedActions.push(entry);
-  port.postMessage({ type: 'ACTION_RECORDED', action: entry, totalActions: recordedActions.length });
+  // Send to background to store
+  chrome.runtime.sendMessage({
+    type: 'ACTION_RECORDED',
+    action: entry
+  }).catch(() => {});
+  // Update on-page counter
   const countEl = document.getElementById('ab-action-count');
-  if (countEl) countEl.textContent = recordedActions.length;
+  if (countEl) {
+    const current = parseInt(countEl.textContent) || 0;
+    countEl.textContent = current + 1;
+  }
 }
 
 // ============ Event Handlers ============
@@ -155,8 +178,10 @@ function handleClick(e) {
   flushTyping();
   const el = e.target;
   recordAction({
-    type: 'click', locator: getAgentBrowserLocator(el),
-    cssSelector: buildSelector(el), description: `Click ${describeElement(el)}`
+    type: 'click',
+    locator: getAgentBrowserLocator(el),
+    cssSelector: buildSelector(el),
+    description: `Click ${describeElement(el)}`
   });
   highlightElement(el);
 }
@@ -165,8 +190,10 @@ function handleDblClick(e) {
   if (!isRecording || isRecorderElement(e.target)) return;
   const el = e.target;
   recordAction({
-    type: 'dblclick', locator: getAgentBrowserLocator(el),
-    cssSelector: buildSelector(el), description: `Double-click ${describeElement(el)}`
+    type: 'dblclick',
+    locator: getAgentBrowserLocator(el),
+    cssSelector: buildSelector(el),
+    description: `Double-click ${describeElement(el)}`
   });
 }
 
@@ -178,8 +205,10 @@ function handleInput(e) {
   if (tag === 'select') {
     flushTyping();
     recordAction({
-      type: 'select', value: el.value, locator: getAgentBrowserLocator(el),
-      cssSelector: buildSelector(el), description: `Select "${el.value}" in ${describeElement(el)}`
+      type: 'select', value: el.value,
+      locator: getAgentBrowserLocator(el),
+      cssSelector: buildSelector(el),
+      description: `Select "${el.value}" in ${describeElement(el)}`
     });
     return;
   }
@@ -189,20 +218,28 @@ function handleInput(e) {
     if (inputType === 'checkbox') {
       flushTyping();
       recordAction({
-        type: el.checked ? 'check' : 'uncheck', locator: getAgentBrowserLocator(el),
-        cssSelector: buildSelector(el), description: `${el.checked ? 'Check' : 'Uncheck'} ${describeElement(el)}`
+        type: el.checked ? 'check' : 'uncheck',
+        locator: getAgentBrowserLocator(el),
+        cssSelector: buildSelector(el),
+        description: `${el.checked ? 'Check' : 'Uncheck'} ${describeElement(el)}`
       });
       return;
     }
     if (inputType === 'radio') {
       flushTyping();
       recordAction({
-        type: 'click', locator: getAgentBrowserLocator(el),
-        cssSelector: buildSelector(el), description: `Select radio ${describeElement(el)}`
+        type: 'click',
+        locator: getAgentBrowserLocator(el),
+        cssSelector: buildSelector(el),
+        description: `Select radio ${describeElement(el)}`
       });
       return;
     }
-    if (el !== lastTypedElement) { flushTyping(); lastTypedElement = el; }
+    // Accumulate typing
+    if (el !== lastTypedElement) {
+      flushTyping();
+      lastTypedElement = el;
+    }
     lastTypedValue = el.value;
     clearTimeout(typingTimer);
     typingTimer = setTimeout(() => flushTyping(), 1500);
@@ -213,8 +250,10 @@ function flushTyping() {
   if (lastTypedElement && lastTypedValue !== undefined) {
     const el = lastTypedElement;
     recordAction({
-      type: 'type', value: lastTypedValue, locator: getAgentBrowserLocator(el),
-      cssSelector: buildSelector(el), description: `Type "${lastTypedValue.substring(0, 50)}" into ${describeElement(el)}`
+      type: 'type', value: lastTypedValue,
+      locator: getAgentBrowserLocator(el),
+      cssSelector: buildSelector(el),
+      description: `Type "${lastTypedValue.substring(0, 50)}" into ${describeElement(el)}`
     });
   }
   lastTypedElement = null;
@@ -226,6 +265,7 @@ function handleKeydown(e) {
   if (!isRecording || isRecorderElement(e.target)) return;
   const specialKeys = ['Enter', 'Tab', 'Escape', 'Backspace', 'Delete'];
   if (specialKeys.includes(e.key)) {
+    // Don't record Enter on input fields (it's part of form submit)
     if (e.key === 'Enter' && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
     flushTyping();
     recordAction({ type: 'press', key: e.key, description: `Press ${e.key}` });
@@ -258,8 +298,10 @@ function handleHover(e) {
     clearTimeout(hoverTimer);
     hoverTimer = setTimeout(() => {
       recordAction({
-        type: 'hover', locator: getAgentBrowserLocator(el),
-        cssSelector: buildSelector(el), description: `Hover over ${describeElement(el)}`
+        type: 'hover',
+        locator: getAgentBrowserLocator(el),
+        cssSelector: buildSelector(el),
+        description: `Hover over ${describeElement(el)}`
       });
     }, 800);
   }
@@ -275,7 +317,7 @@ function handlePopState() {
   }
 }
 
-// ============ Listeners ============
+// ============ Attach / Detach Listeners ============
 
 function attachListeners() {
   document.addEventListener('click', handleClick, true);
@@ -323,7 +365,7 @@ function highlightElement(el) {
 }
 
 function isRecorderElement(el) {
-  return el.closest('#ab-recorder-indicator') || el.classList.contains('ab-highlight');
+  return !!(el.closest('#ab-recorder-indicator') || el.classList.contains('ab-highlight'));
 }
 
 console.log('[AB Recorder] Content script loaded');

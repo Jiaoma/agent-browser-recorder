@@ -1,89 +1,96 @@
 /**
  * Background Service Worker — Manages recording state, stores actions, coordinates between
  * content scripts and popup.
+ *
+ * Uses chrome.storage.session for reliable state persistence across popup open/close.
  */
 
-// State
-let recordingState = {
-  isRecording: false,
-  actions: [],
-  tabId: null,
-  startTime: null
-};
+// ============ State (backed by chrome.storage.session) ============
 
-// Listen for messages from content script and popup
-chrome.runtime.onConnect.addListener((port) => {
-  port.onMessage.addListener((msg) => {
-    switch (msg.type) {
-      case 'RECORDING_COMPLETE':
-        handleRecordingComplete(msg.actions);
-        break;
-      case 'ACTION_RECORDED':
-        // Forward to popup if open
-        broadcastToPopup(msg);
-        break;
-      case 'STATE':
-        // Content script reporting state
-        break;
-    }
-  });
-});
+async function getState() {
+  const result = await chrome.storage.session.get('recorderState');
+  return result.recorderState || {
+    isRecording: false,
+    actions: [],
+    tabId: null,
+    startTime: null
+  };
+}
+
+async function setState(state) {
+  await chrome.storage.session.set({ recorderState: state });
+}
+
+// ============ Message Handling ============
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.type) {
-    case 'START_RECORDING':
-      startRecording();
-      sendResponse({ success: true });
-      break;
-
-    case 'STOP_RECORDING':
-      stopRecording();
-      sendResponse({ success: true, actions: recordingState.actions });
-      break;
-
-    case 'GET_STATE':
-      sendResponse({
-        isRecording: recordingState.isRecording,
-        actionCount: recordingState.actions.length,
-        startTime: recordingState.startTime,
-        tabId: recordingState.tabId
+    case 'START_RECORDING': {
+      startRecording().then(() => sendResponse({ success: true }));
+      return true;
+    }
+    case 'STOP_RECORDING': {
+      stopRecording().then(actions => sendResponse({ success: true, actions }));
+      return true;
+    }
+    case 'GET_STATE': {
+      getState().then(state => sendResponse({
+        isRecording: state.isRecording,
+        actionCount: state.actions.length,
+        startTime: state.startTime,
+        tabId: state.tabId
+      }));
+      return true;
+    }
+    case 'GET_ACTIONS': {
+      getState().then(state => sendResponse({ actions: state.actions }));
+      return true;
+    }
+    case 'CLEAR_ACTIONS': {
+      getState().then(async (state) => {
+        state.actions = [];
+        await setState(state);
+        sendResponse({ success: true });
       });
-      break;
-
-    case 'GET_ACTIONS':
-      sendResponse({ actions: recordingState.actions });
-      break;
-
-    case 'CLEAR_ACTIONS':
-      recordingState.actions = [];
-      sendResponse({ success: true });
-      break;
-
-    case 'EXPORT_SCRIPT':
-      handleExport(msg.format || 'shell');
-      break;
-
-    case 'EXECUTE_COMMAND':
-      executeAgentBrowserCommand(msg.command);
-      sendResponse({ success: true });
-      break;
+      return true;
+    }
+    case 'ACTION_RECORDED': {
+      // From content script — store the action
+      getState().then(async (state) => {
+        state.actions.push(msg.action);
+        await setState(state);
+        // Forward to popup if open
+        chrome.runtime.sendMessage(msg).catch(() => {});
+      });
+      return true;
+    }
   }
-  return true; // Keep channel open for async response
+  return true; // Keep channel open for async
 });
+
+// ============ Recording Control ============
 
 async function startRecording() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab) return;
+  if (!tab) {
+    console.error('[AB Recorder] No active tab found');
+    return;
+  }
 
-  recordingState = {
+  const state = {
     isRecording: true,
     actions: [],
     tabId: tab.id,
     startTime: Date.now()
   };
+  await setState(state);
 
-  // Inject and start recording in content script
-  await chrome.tabs.sendMessage(tab.id, { type: 'START_RECORDING' });
+  // Tell content script to start recording
+  try {
+    await chrome.tabs.sendMessage(tab.id, { type: 'START_RECORDING' });
+  } catch (e) {
+    console.warn('[AB Recorder] Could not reach content script (page may need refresh):', e.message);
+  }
 
   // Update badge
   chrome.action.setBadgeText({ text: 'REC' });
@@ -93,12 +100,15 @@ async function startRecording() {
 }
 
 async function stopRecording() {
-  if (!recordingState.isRecording) return;
-  recordingState.isRecording = false;
+  const state = await getState();
+  if (!state.isRecording) return state.actions;
+
+  state.isRecording = false;
+  await setState(state);
 
   // Tell content script to stop
   try {
-    await chrome.tabs.sendMessage(recordingState.tabId, { type: 'STOP_RECORDING' });
+    await chrome.tabs.sendMessage(state.tabId, { type: 'STOP_RECORDING' });
   } catch (e) {
     console.warn('[AB Recorder] Could not reach content script:', e.message);
   }
@@ -106,55 +116,32 @@ async function stopRecording() {
   // Update badge
   chrome.action.setBadgeText({ text: '' });
 
-  console.log(`[AB Recorder] Recording stopped. ${recordingState.actions.length} actions captured.`);
+  console.log(`[AB Recorder] Recording stopped. ${state.actions.length} actions captured.`);
+  return state.actions;
 }
 
-function handleRecordingComplete(actions) {
-  recordingState.actions = actions;
-  console.log(`[AB Recorder] Received ${actions.length} actions from content script.`);
-}
-
-function broadcastToPopup(msg) {
-  // Popup will receive this if it's listening
-  chrome.runtime.sendMessage(msg).catch(() => {
-    // Popup not open, that's fine
-  });
-}
-
-async function executeAgentBrowserCommand(command) {
-  // Execute agent-browser command via native messaging host
-  try {
-    chrome.runtime.sendNativeMessage('com.agentbrowser.recorder', {
-      command: command
-    }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.error('[AB Recorder] Native messaging error:', chrome.runtime.lastError.message);
-      } else {
-        console.log('[AB Recorder] Command executed:', response);
-      }
-    });
-  } catch (e) {
-    console.error('[AB Recorder] Failed to execute command:', e);
-  }
-}
-
-// Handle tab close
+// Handle tab close — stop recording if the tab is closed
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (recordingState.tabId === tabId) {
-    recordingState.isRecording = false;
-    recordingState.tabId = null;
-    chrome.action.setBadgeText({ text: '' });
-  }
+  getState().then(async (state) => {
+    if (state.tabId === tabId) {
+      state.isRecording = false;
+      state.tabId = null;
+      await setState(state);
+      chrome.action.setBadgeText({ text: '' });
+    }
+  });
 });
 
 // Handle keyboard shortcut
 chrome.commands.onCommand.addListener((command) => {
   if (command === 'toggle-recording') {
-    if (recordingState.isRecording) {
-      stopRecording();
-    } else {
-      startRecording();
-    }
+    getState().then(state => {
+      if (state.isRecording) {
+        stopRecording();
+      } else {
+        startRecording();
+      }
+    });
   }
 });
 

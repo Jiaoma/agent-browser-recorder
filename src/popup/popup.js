@@ -3,7 +3,7 @@
  * Self-contained (no ES module imports for Chrome Manifest V3 compatibility).
  */
 
-// ============ Translator Utilities (inlined from lib/translator.js) ============
+// ============ Translator Utilities (inlined) ============
 
 function shellQuote(str) {
   if (!str) return "''";
@@ -115,57 +115,112 @@ let isRecording = false;
 let startTime = null;
 let durationInterval = null;
 
-loadState();
+// ============ Init ============
 
-btnRecord.addEventListener('click', toggleRecording);
+btnRecord.addEventListener('click', () => {
+  if (isRecording) stopRecording(); else startRecording();
+});
 btnStop.addEventListener('click', stopRecording);
 btnClear.addEventListener('click', clearRecording);
 btnExportShell.addEventListener('click', () => exportAs('shell'));
 btnExportBatch.addEventListener('click', () => exportAs('batch'));
 btnCopyCommands.addEventListener('click', copyCommands);
 
+// Listen for real-time action updates from background
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'ACTION_RECORDED') {
+    actions.push(msg.action);
     addActionToList(msg.action);
-    actionCount.textContent = msg.totalActions;
+    actionCount.textContent = actions.length;
+    updatePreview();
+    if (actions.length > 0) showExportSection();
   }
 });
 
+// Load state on popup open
+loadState();
+
+// ============ State Management ============
+
 async function loadState() {
-  const r = await chrome.runtime.sendMessage({ type: 'GET_STATE' });
-  if (r) {
-    isRecording = r.isRecording;
-    startTime = r.startTime;
-    if (isRecording) { setRecordingUI(true); startDurationTimer(); }
-    if (r.actionCount > 0) {
-      const ar = await chrome.runtime.sendMessage({ type: 'GET_ACTIONS' });
-      if (ar.actions) { actions = ar.actions; renderActionList(); showExportSection(); }
+  try {
+    const state = await sendMessage({ type: 'GET_STATE' });
+    if (!state) return;
+
+    isRecording = state.isRecording;
+    startTime = state.startTime;
+
+    if (isRecording) {
+      setRecordingUI(true);
+      startDurationTimer();
     }
+
+    if (state.actionCount > 0) {
+      const result = await sendMessage({ type: 'GET_ACTIONS' });
+      if (result && result.actions) {
+        actions = result.actions;
+        renderActionList();
+        actionCount.textContent = actions.length;
+        showExportSection();
+      }
+    }
+  } catch (e) {
+    console.error('[AB Recorder] Failed to load state:', e);
   }
 }
 
-async function toggleRecording() {
-  if (isRecording) await stopRecording(); else await startRecording();
+function sendMessage(msg) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(msg, (response) => {
+      if (chrome.runtime.lastError) {
+        console.warn('[AB Recorder] Message error:', chrome.runtime.lastError.message);
+        resolve(null);
+      } else {
+        resolve(response);
+      }
+    });
+  });
 }
 
+// ============ Recording Controls ============
+
 async function startRecording() {
-  await chrome.runtime.sendMessage({ type: 'START_RECORDING' });
-  isRecording = true; startTime = Date.now(); actions = [];
-  setRecordingUI(true); startDurationTimer();
+  await sendMessage({ type: 'START_RECORDING' });
+  isRecording = true;
+  startTime = Date.now();
+  actions = [];
+  setRecordingUI(true);
+  startDurationTimer();
+  renderActionList();
+  hideExportSection();
 }
 
 async function stopRecording() {
-  const r = await chrome.runtime.sendMessage({ type: 'STOP_RECORDING' });
+  const result = await sendMessage({ type: 'STOP_RECORDING' });
   isRecording = false;
-  if (r.actions) actions = r.actions;
-  setRecordingUI(false); stopDurationTimer(); renderActionList(); showExportSection();
+  // Reload actions from storage to make sure we have them all
+  const stateResult = await sendMessage({ type: 'GET_ACTIONS' });
+  if (stateResult && stateResult.actions) {
+    actions = stateResult.actions;
+  } else if (result && result.actions) {
+    actions = result.actions;
+  }
+  setRecordingUI(false);
+  stopDurationTimer();
+  renderActionList();
+  actionCount.textContent = actions.length;
+  if (actions.length > 0) showExportSection();
 }
 
 async function clearRecording() {
-  await chrome.runtime.sendMessage({ type: 'CLEAR_ACTIONS' });
-  actions = []; renderActionList(); hideExportSection();
+  await sendMessage({ type: 'CLEAR_ACTIONS' });
+  actions = [];
+  renderActionList();
+  hideExportSection();
   actionCount.textContent = '0';
 }
+
+// ============ UI Updates ============
 
 function setRecordingUI(recording) {
   btnRecord.disabled = recording;
@@ -190,15 +245,18 @@ function startDurationTimer() {
   }, 1000);
 }
 
-function stopDurationTimer() { clearInterval(durationInterval); durationInterval = null; }
+function stopDurationTimer() {
+  if (durationInterval) clearInterval(durationInterval);
+  durationInterval = null;
+}
 
 function renderActionList() {
   actionList.innerHTML = '';
   if (actions.length === 0) {
-    actionList.innerHTML = '<div class="empty-state"><span class="empty-icon">🎬</span><p>Click <strong>Record</strong> to start capturing</p><p class="hint">Shortcut: Ctrl+Shift+R</p></div>';
+    actionList.innerHTML = '<div class="empty-state"><span class="empty-icon">🎬</span><p>Click <strong>Record</strong> to start capturing</p><p class="hint">Shortcut: Ctrl+Shift+R (Mac: Cmd+Shift+R)</p></div>';
     return;
   }
-  actions.forEach((a) => addActionToList(a));
+  actions.forEach(a => addActionToList(a));
 }
 
 const iconMap = {
@@ -226,11 +284,9 @@ function addActionToList(action) {
 }
 
 function showExportSection() {
-  if (actions.length > 0) {
-    exportSection.style.display = 'block';
-    previewSection.style.display = 'block';
-    updatePreview();
-  }
+  exportSection.style.display = 'block';
+  previewSection.style.display = 'block';
+  updatePreview();
 }
 
 function hideExportSection() {
@@ -242,28 +298,44 @@ function updatePreview() {
   previewCode.textContent = actions.map(a => translateCommand(a, a.locator || {})).join('\n');
 }
 
+// ============ Export ============
+
 function exportAs(format) {
+  if (actions.length === 0) return;
   let content, filename, mimeType;
   const wrapped = actions.map(a => ({ action: a, locator: a.locator || {} }));
   if (format === 'shell') {
-    content = generateScript(wrapped); filename = 'agent-browser-recording.sh'; mimeType = 'text/x-shellscript';
+    content = generateScript(wrapped);
+    filename = 'agent-browser-recording.sh';
+    mimeType = 'text/x-shellscript';
   } else {
-    content = generateBatchCommands(wrapped); filename = 'agent-browser-commands.json'; mimeType = 'application/json';
+    content = generateBatchCommands(wrapped);
+    filename = 'agent-browser-commands.json';
+    mimeType = 'application/json';
   }
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = filename; a.click();
+  a.href = url;
+  a.download = filename;
+  a.click();
   URL.revokeObjectURL(url);
 }
 
 async function copyCommands() {
+  if (actions.length === 0) return;
   const text = actions.map(a => translateCommand(a, a.locator || {})).join('\n');
   try {
     await navigator.clipboard.writeText(text);
     btnCopyCommands.textContent = '✅ Copied!';
     setTimeout(() => { btnCopyCommands.textContent = '📋 Copy Commands'; }, 2000);
-  } catch (e) { console.error('Failed to copy:', e); }
+  } catch (e) {
+    console.error('Failed to copy:', e);
+  }
 }
 
-function escapeHtml(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
