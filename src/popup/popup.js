@@ -1,11 +1,11 @@
 /**
  * Popup Script — UI controller for the extension popup.
  *
- * Generates agent-browser commands using find text/label/placeholder/testid.
- * Avoids find role (unreliable in current agent-browser).
+ * Exports Shell scripts that use snapshot+ref strategy for reliable playback.
+ * Preview shows simplified commands; exported .sh uses the full snapshot-based approach.
  */
 
-// ============ Translator (inlined, matches src/lib/translator.js) ============
+// ============ Translator (inlined from src/lib/translator.js) ============
 
 function shellQuote(str) {
   if (!str) return "''";
@@ -13,7 +13,7 @@ function shellQuote(str) {
   return `'${str.replace(/'/g, "'\\''")}'`;
 }
 
-function translateCommand(action, locator) {
+function cmdForSimpleAction(action) {
   switch (action.type) {
     case 'navigate': return `agent-browser open ${shellQuote(action.url)}`;
     case 'press': return `agent-browser press ${action.key}`;
@@ -21,72 +21,90 @@ function translateCommand(action, locator) {
     case 'forward': return 'agent-browser forward';
     case 'reload': return 'agent-browser reload';
     case 'scroll': return `agent-browser scroll ${action.direction} ${action.amount || ''}`.trim();
-    case 'tab_new': return `agent-browser open ${action.url ? shellQuote(action.url) : ''} --new-tab`.trim();
-    case 'tab_close': return 'agent-browser close';
-  }
-  const actionMap = { click: 'click', dblclick: 'dblclick', type: 'fill', select: 'fill', check: 'check', uncheck: 'uncheck', hover: 'hover', focus: 'focus' };
-  const abAction = actionMap[action.type] || 'click';
-  const isFill = action.type === 'type' || action.type === 'select';
-  if (!locator || !locator.strategy) {
-    if (isFill) return `agent-browser fill ${shellQuote(action.cssSelector || 'body')} ${shellQuote(action.value)}`;
-    return `agent-browser ${abAction} ${shellQuote(action.cssSelector || 'body')}`;
-  }
-  switch (locator.strategy) {
-    case 'testid':
-      if (isFill) return `agent-browser find testid ${shellQuote(locator.value)} fill ${shellQuote(action.value)}`;
-      return `agent-browser find testid ${shellQuote(locator.value)} ${abAction}`;
-    case 'label':
-      if (isFill) return `agent-browser find label ${shellQuote(locator.value)} fill ${shellQuote(action.value)}`;
-      return `agent-browser find label ${shellQuote(locator.value)} ${abAction}`;
-    case 'placeholder':
-      if (isFill) return `agent-browser find placeholder ${shellQuote(locator.value)} fill ${shellQuote(action.value)}`;
-      return `agent-browser find placeholder ${shellQuote(locator.value)} ${abAction}`;
-    case 'text':
-      if (isFill) return `agent-browser find text ${shellQuote(locator.value)} fill ${shellQuote(action.value)}`;
-      return `agent-browser find text ${shellQuote(locator.value)} ${abAction}`;
-    case 'css':
-    default:
-      if (isFill) return `agent-browser fill ${shellQuote(locator.value)} ${shellQuote(action.value)}`;
-      return `agent-browser ${abAction} ${shellQuote(locator.value)}`;
+    default: return '';
   }
 }
 
+function translateCommandPreview(action, locator) {
+  if (['press','back','forward','reload','scroll'].includes(action.type)) return cmdForSimpleAction(action);
+  if (action.type === 'navigate') return `agent-browser open ${shellQuote(action.url)}`;
+  const abAction = { click:'click', dblclick:'dblclick', type:'fill', select:'fill',
+                     check:'check', uncheck:'uncheck', hover:'hover', focus:'focus' }[action.type] || 'click';
+  const isFill = action.type === 'type' || action.type === 'select';
+  const text = (locator && locator.value) || '';
+  if (text && isFill) return `agent-browser find text ${shellQuote(text)} fill ${shellQuote(action.value)}`;
+  if (text) return `agent-browser find text ${shellQuote(text)} ${abAction}`;
+  if (isFill) return `agent-browser fill ${shellQuote(action.cssSelector||'body')} ${shellQuote(action.value)}`;
+  return `agent-browser ${abAction} ${shellQuote(action.cssSelector||'body')}`;
+}
+
 function generateScript(actions) {
-  const lines = ['#!/bin/bash', '# Agent Browser Recorder - Auto-generated script', `# Generated: ${new Date().toISOString()}`, ''];
+  const lines = [
+    '#!/bin/bash',
+    '# Agent Browser Recorder — Auto-generated script',
+    `# Generated: ${new Date().toISOString()}`,
+    '# Strategy: snapshot → grep ref → act on @ref',
+    '',
+    '# Helper: get ref from snapshot by text search',
+    'ab_ref() {',
+    '  agent-browser snapshot -i 2>/dev/null | grep -i "$1" | head -1 | grep -o "ref=e[0-9]*" | cut -d= -f2',
+    '}',
+    ''
+  ];
   const firstNav = actions.find(a => a.action.type === 'navigate');
   if (firstNav) {
     lines.push(`agent-browser open ${shellQuote(firstNav.action.url)}`);
     lines.push('agent-browser wait --load networkidle');
-    lines.push('agent-browser snapshot -i');
     lines.push('');
   }
   for (const { action, locator } of actions) {
-    if (action === firstNav?.action && action.type === 'navigate') continue;
-    if (action.type === 'navigate' && action !== firstNav?.action) continue;
+    if (action.type === 'navigate') continue;
     if (action.description) lines.push(`# ${action.description}`);
-    lines.push(translateCommand(action, locator));
+    if (['press','back','forward','reload','scroll'].includes(action.type)) {
+      lines.push(cmdForSimpleAction(action)); lines.push(''); continue;
+    }
+    const abAction = { click:'click', dblclick:'dblclick', type:'fill', select:'fill',
+                       check:'check', uncheck:'uncheck', hover:'hover', focus:'focus' }[action.type] || 'click';
+    const isFill = action.type === 'type' || action.type === 'select';
+    let search = '';
+    if (locator && locator.value) search = locator.value;
+    else if (action.description) { const m = action.description.match(/"([^"]+)"/); if (m) search = m[1]; }
+
+    if (search) {
+      lines.push(`REF=$(ab_ref ${shellQuote(search)})`);
+      lines.push('if [ -n "$REF" ]; then');
+      if (isFill) lines.push(`  agent-browser fill "@$REF" ${shellQuote(action.value)}`);
+      else lines.push(`  agent-browser ${abAction} "@$REF"`);
+      lines.push(`  echo "✓ ${abAction}: ${search.replace(/"/g, '\\"')}"`);
+      lines.push('else');
+      lines.push(`  echo "✗ Not found: ${search.replace(/"/g, '\\"')}"`);
+      lines.push('fi');
+    } else {
+      const sel = shellQuote(action.cssSelector || 'body');
+      if (isFill) lines.push(`agent-browser fill ${sel} ${shellQuote(action.value)}`);
+      else lines.push(`agent-browser ${abAction} ${sel}`);
+    }
     if (action.type === 'click') lines.push('agent-browser wait --load networkidle');
+    lines.push('');
   }
-  lines.push('', '# End of recorded script');
+  lines.push('echo "🎬 Script complete"');
   return lines.join('\n');
 }
 
 function generateBatchCommands(actions) {
   const commands = [];
   const firstNav = actions.find(a => a.action.type === 'navigate');
-  if (firstNav) { commands.push(['open', firstNav.action.url]); commands.push(['wait', '--load', 'networkidle']); }
+  if (firstNav) { commands.push(['open', firstNav.action.url]); commands.push(['wait','--load','networkidle']); }
   for (const { action, locator } of actions) {
-    if (action === firstNav?.action && action.type === 'navigate') continue;
-    if (action.type === 'navigate' && action !== firstNav?.action) continue;
-    const cmd = translateCommand(action, locator).replace(/^agent-browser\s+/, '');
+    if (action.type === 'navigate') continue;
+    const cmd = translateCommandPreview(action, locator).replace(/^agent-browser\s+/, '');
     commands.push(parseCmd(cmd));
   }
   return JSON.stringify(commands, null, 2);
 }
 
 function parseCmd(str) {
-  const tokens = [];
-  let cur = '', inQ = false, qc = '';
+  const tokens = []; let cur = '', inQ = false, qc = '';
   for (const ch of str) {
     if (inQ) { if (ch === qc) inQ = false; else cur += ch; }
     else if (ch === "'" || ch === '"') { inQ = true; qc = ch; }
@@ -216,12 +234,12 @@ function addActionToList(action) {
   const empty = actionList.querySelector('.empty-state'); if (empty) empty.remove();
   const item = document.createElement('div'); item.className = 'action-item';
   const locator = action.locator || {};
-  item.innerHTML = `<div class="action-icon ${action.type}">${iconMap[action.type] || '❓'}</div><div class="action-details"><div class="action-type">${action.type}</div><div class="action-desc">${escapeHtml(action.description || '')}</div><div class="action-command">${escapeHtml(translateCommand(action, locator))}</div></div>`;
+  item.innerHTML = `<div class="action-icon ${action.type}">${iconMap[action.type] || '❓'}</div><div class="action-details"><div class="action-type">${action.type}</div><div class="action-desc">${escapeHtml(action.description || '')}</div><div class="action-command">${escapeHtml(translateCommandPreview(action, locator))}</div></div>`;
   actionList.appendChild(item); actionList.scrollTop = actionList.scrollHeight;
 }
 
 function updatePreview() {
-  previewCode.textContent = actions.length === 0 ? '// Start recording to see commands here' : actions.map(a => translateCommand(a, a.locator || {})).join('\n');
+  previewCode.textContent = actions.length === 0 ? '// Start recording to see commands here' : actions.map(a => translateCommandPreview(a, a.locator || {})).join('\n');
 }
 
 function downloadExport(format) {
@@ -239,7 +257,7 @@ function downloadExport(format) {
 
 async function copyCommands() {
   if (actions.length === 0) return;
-  try { await navigator.clipboard.writeText(actions.map(a => translateCommand(a, a.locator || {})).join('\n')); btnCopyCommands.textContent = '✅ Copied!'; setTimeout(() => { btnCopyCommands.textContent = '📋 Copy'; }, 2000); } catch (e) { console.error('Copy failed:', e); }
+  try { await navigator.clipboard.writeText(actions.map(a => translateCommandPreview(a, a.locator || {})).join('\n')); btnCopyCommands.textContent = '✅ Copied!'; setTimeout(() => { btnCopyCommands.textContent = '📋 Copy'; }, 2000); } catch (e) { console.error('Copy failed:', e); }
 }
 
 function escapeHtml(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
