@@ -1,18 +1,16 @@
 /**
  * Background Service Worker — Manages recording state.
  *
- * Uses in-memory state (reliable) + chrome.storage.local for persistence across
- * service worker restarts. Avoids chrome.storage.session (not available in all Chrome versions).
+ * Key feature: tracks ALL recording tabs, not just one.
+ * When recording is active, new tabs auto-start recording via content script polling.
  */
 
-// ============ In-Memory State ============
+// ============ State ============
 
-let state = {
-  isRecording: false,
-  actions: [],
-  tabId: null,
-  startTime: null
-};
+let isRecording = false;
+let actions = [];
+let startTime = null;
+let recordingTabIds = new Set(); // Track all tabs that are recording
 
 // ============ Message Handling ============
 
@@ -23,30 +21,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
     }
     case 'STOP_RECORDING': {
-      stopRecording().then(actions => sendResponse({ success: true, actions }));
+      stopRecording().then(() => sendResponse({ success: true, actions }));
       return true;
     }
     case 'GET_STATE': {
       sendResponse({
-        isRecording: state.isRecording,
-        actionCount: state.actions.length,
-        startTime: state.startTime,
-        tabId: state.tabId
+        isRecording,
+        actionCount: actions.length,
+        startTime,
       });
       return true;
     }
     case 'GET_ACTIONS': {
-      sendResponse({ actions: state.actions });
+      sendResponse({ actions });
       return true;
     }
     case 'CLEAR_ACTIONS': {
-      state.actions = [];
+      actions = [];
       sendResponse({ success: true });
       return true;
     }
     case 'ACTION_RECORDED': {
-      // From content script — store the action
-      state.actions.push(msg.action);
+      // From any content script tab
+      actions.push(msg.action);
       // Forward to popup if open
       chrome.runtime.sendMessage(msg).catch(() => {});
       sendResponse({ success: true });
@@ -65,19 +62,14 @@ async function startRecording() {
     return;
   }
 
-  state = {
-    isRecording: true,
-    actions: [],
-    tabId: tab.id,
-    startTime: Date.now()
-  };
+  isRecording = true;
+  actions = [];
+  startTime = Date.now();
+  recordingTabIds.clear();
+  recordingTabIds.add(tab.id);
 
   // Tell content script to start recording
-  try {
-    await chrome.tabs.sendMessage(tab.id, { type: 'START_RECORDING' });
-  } catch (e) {
-    console.warn('[AB Recorder] Could not reach content script (page may need refresh):', e.message);
-  }
+  await sendStartToTab(tab.id);
 
   // Update badge
   chrome.action.setBadgeText({ text: 'REC' });
@@ -87,37 +79,71 @@ async function startRecording() {
 }
 
 async function stopRecording() {
-  if (!state.isRecording) return state.actions;
+  isRecording = false;
 
-  state.isRecording = false;
-
-  // Tell content script to stop
-  try {
-    await chrome.tabs.sendMessage(state.tabId, { type: 'STOP_RECORDING' });
-  } catch (e) {
-    console.warn('[AB Recorder] Could not reach content script:', e.message);
+  // Tell all recording tabs to stop
+  for (const tabId of recordingTabIds) {
+    await sendStopToTab(tabId);
   }
+  recordingTabIds.clear();
 
   // Update badge
   chrome.action.setBadgeText({ text: '' });
 
-  console.log(`[AB Recorder] Recording stopped. ${state.actions.length} actions captured.`);
-  return state.actions;
+  console.log(`[AB Recorder] Recording stopped. ${actions.length} actions captured.`);
 }
 
-// Handle tab close — stop recording if the tab is closed
-chrome.tabs.onRemoved.addListener((tabId) => {
-  if (state.tabId === tabId) {
-    state.isRecording = false;
-    state.tabId = null;
-    chrome.action.setBadgeText({ text: '' });
+async function sendStartToTab(tabId) {
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'START_RECORDING' });
+    recordingTabIds.add(tabId);
+    console.log('[AB Recorder] Started recording on tab', tabId);
+  } catch (e) {
+    console.warn('[AB Recorder] Could not reach tab', tabId, e.message);
+    // Content script not loaded yet — it will auto-check on load
   }
+}
+
+async function sendStopToTab(tabId) {
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'STOP_RECORDING' });
+  } catch (e) {
+    // Tab might be closed, ignore
+  }
+}
+
+// ============ Tab Lifecycle ============
+
+// When a new tab is created during recording, mark it for recording
+chrome.tabs.onCreated.addListener((tab) => {
+  if (!isRecording) return;
+  recordingTabIds.add(tab.id);
+  console.log('[AB Recorder] New tab created during recording:', tab.id);
+  // Content script will auto-check state when it loads (document_idle)
+});
+
+// When a tab finishes loading during recording, send START_RECORDING
+// (content script may have just been injected for the first time)
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (!isRecording) return;
+  if (changeInfo.status !== 'complete') return;
+  if (!recordingTabIds.has(tabId)) return;
+
+  // Give content script a moment to initialize
+  setTimeout(() => {
+    sendStartToTab(tabId);
+  }, 500);
+});
+
+// When any recording tab is closed, remove from set
+chrome.tabs.onRemoved.addListener((tabId) => {
+  recordingTabIds.delete(tabId);
 });
 
 // Handle keyboard shortcut
 chrome.commands.onCommand.addListener((command) => {
   if (command === 'toggle-recording') {
-    if (state.isRecording) {
+    if (isRecording) {
       stopRecording();
     } else {
       startRecording();

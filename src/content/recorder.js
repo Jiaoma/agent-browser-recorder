@@ -152,6 +152,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true;
 });
 
+// ============ Auto-check recording state on load ============
+// When content script loads (new page, new tab, page refresh),
+// ask background if recording is active. If yes, auto-start.
+(function checkRecordingState() {
+  try {
+    chrome.runtime.sendMessage({ type: 'GET_STATE' }, (response) => {
+      if (chrome.runtime.lastError) return;
+      if (response && response.isRecording && !isRecording) {
+        startRecording();
+        console.log('[AB Recorder] Auto-started recording on this tab');
+      }
+    });
+  } catch (e) {}
+})();
+
 // ============ Recording Logic ============
 
 function startRecording() {
